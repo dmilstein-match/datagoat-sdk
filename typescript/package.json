@@ -1,0 +1,50 @@
+{
+  "name": "@datagoat/sdk",
+  "version": "1.6.0",
+  "description": "Ask yesno, score, choice and rank questions about cases, answered from what happened to cases like them. Deterministic, with reasons and signed Verdicts.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "homepage": "https://datagoat.io/docs/sdks",
+  "bugs": {
+    "email": "support@datagoat.io"
+  },
+  "keywords": [
+    "datagoat",
+    "prediction",
+    "churn",
+    "ranking",
+    "decision",
+    "mcp",
+    "verdict",
+    "deterministic"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dmilstein-match/datagoat-sdk.git",
+    "directory": "typescript"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "tsx": "^4.23.15",
+    "@types/node": "^22.20.4"
+  }
+}

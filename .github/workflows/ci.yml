@@ -1,0 +1,40 @@
+name: ci
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"   # weekly: the examples against the live service
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ matrix.python }}" }
+      - run: pip install pytest pydantic && cd python && python -m pytest -q
+  typescript:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ matrix.node }}" }
+      - run: cd typescript && npm install && npm test && npm run build
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install ./python
+      - name: offline example (no network)
+        run: python examples/05_verify_offline.py
+      - name: live examples on the free samples, with a fresh test key
+        run: |
+          export DATAGOAT_API_KEY=$(curl -s -X POST https://api.datagoat.io/v1/agents/register | python -c 'import json,sys; print(json.load(sys.stdin)["api_key"])')
+          for f in examples/0[1-4]_*.py; do echo "== $f"; python "$f"; done

@@ -1,0 +1,29 @@
+[project]
+name = "datagoat"
+version = "1.6.0"
+description = "Ask yesno, score, choice and rank questions about cases, answered from what happened to cases like them. Deterministic, with reasons and signed Verdicts."
+keywords = ["datagoat", "prediction", "churn", "ranking", "decision", "mcp", "verdict", "deterministic"]
+requires-python = ">=3.9"
+dependencies = []
+license = {text = "Apache-2.0"}
+readme = "README.md"
+
+[project.urls]
+Homepage = "https://datagoat.io"
+Documentation = "https://datagoat.io/docs/sdks"
+Support = "https://datagoat.io/support"
+Source = "https://github.com/dmilstein-match/datagoat-sdk"
+
+[project.optional-dependencies]
+langchain = ["langchain-core>=0.3"]
+test = ["pytest", "pydantic"]
+
+[project.scripts]
+datagoat = "datagoat.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["datagoat*"]

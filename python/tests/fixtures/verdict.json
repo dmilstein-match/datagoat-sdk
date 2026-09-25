@@ -1,0 +1,111 @@
+{
+ "note": "A real Verdict from dg_ask on sample:deal_activity, asked on a free test key (no account behind it), 2026-09-25; the signature and key are Datagoat's production ones.",
+ "verdict": {
+  "verdict_id": "01M3B5XP3VMVPAXNRV0VP3YXFV",
+  "kind": "entity_score",
+  "analysis_id": "sk1_9880f2a409ba9e818e4a544b63af1233",
+  "model_ref": "mr1_417e60e11c1b37d66b7fb558f7a8c101",
+  "ranking_ref": null,
+  "engine_version": "0.3.6",
+  "core_hash": "d65816fbdd14a94abe2c2588172be49661d44402b637d9d85e494537339c99f5",
+  "contract_hash": "4ec4e74373cf9fdaa9589632cae7b96d6823df360a273f89561d2d322134807b",
+  "tool_contract_version": "2.0.0",
+  "dataset_content_hash": "304cc01b0af4b7a67de21ce9644749ed",
+  "spec_hash": "sp1_a4fd115333bb044a69ed37810da7f199",
+  "computed_at": "2026-09-25T02:22:15Z",
+  "expires_at": "2026-12-24T02:22:10Z",
+  "issuer": "datagoat.io",
+  "on_behalf_of": null,
+  "agent": {
+   "client_id": "api-key",
+   "key_id": "db500997-0ba6-4132-9933-beb3c3f879e8"
+  },
+  "outcome": {
+   "column": "won",
+   "polarity": "desirable"
+  },
+  "subject_kind": "org",
+  "acknowledge_decision_support": false,
+  "trust": {
+   "realised_lift": 2.41591169426221,
+   "top_decile_lift": 2.732237,
+   "validation": {
+    "scheme": "out_of_time"
+   }
+  },
+  "entities": [
+   {
+    "entity_id": "deal_0001@demo",
+    "score": 0.7001631935516078,
+    "band": "act",
+    "band_reason": "certified",
+    "max_autonomy": "L3",
+    "principal_reasons": [],
+    "drivers": [
+     {
+      "feature_label": "inbound_count_30d",
+      "likelihood_direction": "higher",
+      "strength": "strong",
+      "association_not_causal": true,
+      "value": 14,
+      "range": {
+       "at_least": 11,
+       "text": "inbound_count_30d 11 or more"
+      }
+     },
+     {
+      "feature_label": "amount",
+      "likelihood_direction": "higher",
+      "strength": "strong",
+      "association_not_causal": true,
+      "value": 12000,
+      "range": {
+       "below": 18000,
+       "text": "amount under 18000"
+      }
+     },
+     {
+      "feature_label": "meeting_count_30d",
+      "likelihood_direction": "higher",
+      "strength": "strong",
+      "association_not_causal": true,
+      "value": 2,
+      "range": {
+       "at_least": 2,
+       "text": "meeting_count_30d 2 or more"
+      }
+     }
+    ],
+    "pattern_match": {
+     "matched": 4,
+     "of": 4,
+     "met": [
+      "inbound_count_30d",
+      "meeting_count_30d",
+      "amount",
+      "inbound_count_7d"
+     ]
+    }
+   }
+  ],
+  "honest_empty": null,
+  "provenance_class": "finding"
+ },
+ "signature": {
+  "protected": "eyJhbGciOiJFZERTQSIsImI2NCI6ZmFsc2UsImNyaXQiOlsiYjY0Il0sImtpZCI6IjIwMjYtcTMiLCJ0eXAiOiJocy12ZXJkaWN0K2pzb24ifQ",
+  "signature": "uIljQa_RJG_mpXpEzTKjuU5nhSSb_ZIKUB2sbqVQmb-Y8s8fjdhFtWSuEPglZKobagldhVRqnGsANWO2qwzjAw",
+  "kid": "2026-q3"
+ },
+ "jwks": {
+  "keys": [
+   {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "kid": "2026-q3",
+    "use": "sig",
+    "alg": "EdDSA",
+    "x": "13nq2TOwInIjrrPX0TnGjJ9-J91jhbKLTteX0youDKA"
+   }
+  ]
+ }
+}
