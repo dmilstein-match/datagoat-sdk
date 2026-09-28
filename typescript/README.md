@@ -92,6 +92,24 @@ await verifyOffline(v.verdict, v.signature, await fetchKeys());   // "valid", wi
 await dg.trackRecord(ref);                                         // the model's calls against reported outcomes
 ```
 
+## Watching a fit
+
+A first fit on a large record answers `pending`, and `ask` waits for it. With `onProgress`, it
+reads the task's event stream while it waits and passes on each stage the server reports, with
+its `message` (the sentence to show, verbatim), `elapsed_ms`, `facts` and, when known, `frac`:
+
+```ts
+const out = await dg.ask({ churn: yesno("churned", { outcome_is_desirable: false }) }, {
+  data: { dataset_id: "sample:saas_churn" }, entity_column: "customer_id", subject_kind: "org",
+  cases: { ids: ["cust_0001"] },
+  onProgress: (e) => console.error("message" in e ? e.message : e.status),
+});
+// dg.events(taskId) is the same stream as an AsyncIterable of { event, id, data }
+```
+
+A dropped connection resumes from the last event. Where there is no stream, `ask` polls as before
+and `onProgress` gets each pending poll body. The answer itself always comes from `poll`.
+
 ## Errors
 
 Every error is a `DatagoatError` with `problem.code`, `problem.remedy`, `problem.field` and

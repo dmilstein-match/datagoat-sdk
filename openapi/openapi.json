@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Datagoat API",
-    "version": "1.7.0",
+    "version": "1.8.0",
     "description": "Ask yes/no, score, choice and rank questions about cases. Datagoat answers from what happened to cases like them: deterministic, with reasons, signed, and it refuses rather than guess. MCP: https://api.datagoat.io/mcp\n\n## Which journey\n\nFive journeys organise the operations: each operation is tagged with the journeys that use it, https://api.datagoat.io/journeys.arazzo.yaml has each journey as an Arazzo 1.1.0 workflow, and `describe` lists them with ready-to-run calls.\n\n| Journey | Fits when the user… | Not when… | First call |\n|---|---|---|---|\n| [Try it](https://datagoat.io/docs/quickstart) | has no data yet, or wants to see an answer and a refusal before using their own | they already have a table of past cases (Ask your data) | `dg_describe`, then `dg_ask` (a sample's ready-to-run ask) |\n| [Ask your data](https://datagoat.io/docs/ask-your-data) | has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it | they will score cases every day for their own customers (Ship a product) | `dg_add_dataset` (upload: true for a file a person holds), then `dg_suggest` |\n| [Ship a product](https://datagoat.io/docs/build) | will score many customers' cases repeatedly, on a schedule, inside their own product | it is a one-off question about one table (Ask your data) | `dg_ask` (with namespace and model_ttl_days), then `dg_ask` (by model_ref, no fit) |\n| [Run it](https://datagoat.io/docs/run) | already has a model_ref in use and is learning what happened to the cases it scored | no model has been fitted yet (Ask your data) | `dg_report_outcomes`, then `dg_drift` |\n| [Prove it](https://datagoat.io/docs/prove) | must show someone the calls were right, or measure whether acting on them worked | they only need the answer (Ask your data) | `dg_verify`, then `dg_track_record` (or dg_evidence, whether acting on the calls worked) |",
     "contact": {
       "url": "https://datagoat.io"
@@ -1180,6 +1180,163 @@
         }
       }
     },
+    "/v1/tasks/{task_id}/events": {
+      "get": {
+        "operationId": "task_events",
+        "summary": "Watch a pending ask",
+        "description": "A pending ask's stages, with the key that asked, scoped to its workspace. Server-Sent Events (text/event-stream). The current stage first, with every fact so far; each later stage as the engine reports it (event stage: {task_id, stage, frac?, fit?, of?, facts {rows?, outcome?, training_rows?, held_out_rows?, bootstrap?}, message, elapsed_ms}); then one event answer per question ({task_id, question, state, decision, reasons?}) and done ({task_id, status, result_url?}), or error ({task_id, code, detail, remedy, doc_url}). No chance or finding crosses before the answer. Each event has an id; the stream closes at done or error or before about five minutes, and a client reconnecting with Last-Event-ID (or ?last_event_id=) gets only later events, while the task runs the stream always opens, with heartbeats until the next stage, and only a finished task whose done (or error) the client holds answers 204. A comment line every 15 seconds keeps it open. Guide: https://datagoat.io/docs/watching",
+        "tags": [
+          "Other"
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The id of the last event received; only later events are sent."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The event stream.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The client already holds every event (its Last-Event-ID is the done event)."
+          },
+          "404": {
+            "description": "No such task in this workspace (unknown_task), or not a link Datagoat issued (unknown_link).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/watch/{token}/events": {
+      "get": {
+        "operationId": "watch_events",
+        "summary": "Watch a pending ask by its watch link",
+        "description": "The same events for the token in a pending answer's watch_url (https://datagoat.io/watch/<token>). The signed token is the credential: no key is sent, it opens one task, and it expires with the task's answer (410 watch_link_expired); done carries no result_url. Server-Sent Events (text/event-stream). The current stage first, with every fact so far; each later stage as the engine reports it (event stage: {task_id, stage, frac?, fit?, of?, facts {rows?, outcome?, training_rows?, held_out_rows?, bootstrap?}, message, elapsed_ms}); then one event answer per question ({task_id, question, state, decision, reasons?}) and done ({task_id, status, result_url?}), or error ({task_id, code, detail, remedy, doc_url}). No chance or finding crosses before the answer. Each event has an id; the stream closes at done or error or before about five minutes, and a client reconnecting with Last-Event-ID (or ?last_event_id=) gets only later events, while the task runs the stream always opens, with heartbeats until the next stage, and only a finished task whose done (or error) the client holds answers 204. A comment line every 15 seconds keeps it open. Guide: https://datagoat.io/docs/watching",
+        "tags": [
+          "Other"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The id of the last event received; only later events are sent."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The event stream.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The client already holds every event (its Last-Event-ID is the done event)."
+          },
+          "404": {
+            "description": "No such task in this workspace (unknown_task), or not a link Datagoat issued (unknown_link).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The link has expired (watch_link_expired).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The task's watch streams are at their limit (5 open at once, 60 opened a minute): watch_streams_limited, with retry_after_ms. A watch link never spends the workspace's own request budget.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agents/register": {
       "post": {
         "operationId": "register_agent",
@@ -2141,7 +2298,7 @@
             "maximum": 9007199254740991
           },
           "progress": {
-            "description": "pending only, while the engine is fitting: its stage, how far along, and facts about the record so far (rows, the outcome, rows held out); no chance and no finding.",
+            "description": "pending only, while the engine is fitting: its stage, how far along, and facts about the record so far (rows, the outcome, rows held out, whether it checks by resampling); no chance and no finding.",
             "type": "object",
             "properties": {
               "stage": {
@@ -2181,12 +2338,20 @@
                   },
                   "outcome": {
                     "type": "string"
+                  },
+                  "bootstrap": {
+                    "description": "true when the record is small and the engine checks the pattern by resampling it rather than on held-out rows.",
+                    "type": "boolean"
                   }
                 },
                 "additionalProperties": {}
               }
             },
             "additionalProperties": {}
+          },
+          "watch_url": {
+            "description": "pending only: a page that shows this task's stages live and then its answer summary, for anyone holding the link (it shows no rows). The same stages stream as events from GET /v1/watch/{token}/events, or with the key from GET /v1/tasks/{task_id}/events. Valid while the answer is kept, 24 hours.",
+            "type": "string"
           },
           "page": {
             "description": "Only when the answer is larger than one MCP response: this response is its first page.",
@@ -2957,7 +3122,7 @@
                   "const": "unproductive"
                 },
                 "needs": {
-                  "description": "not_yet: how many more of each the record needs before a model can be checked. A too_few_predictors refusal: how many more usable columns.",
+                  "description": "not_yet: how many more of each the record needs before a model can be checked. A too_few_predictors refusal: how many more columns that carry signal.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
@@ -2974,7 +3139,7 @@
                       ]
                     },
                     "columns": {
-                      "description": "too_few_predictors: how many more usable predictor columns the record needs (a usable column varies, is not the outcome, an identifier or a time key, and does not restate the outcome).",
+                      "description": "too_few_predictors: the fewest more columns that carry real signal the record needs (4 minus have.predictive_columns); a column of noise does not count.",
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
@@ -3029,7 +3194,13 @@
                       "maximum": 9007199254740991
                     },
                     "columns": {
-                      "description": "too_few_predictors: the usable predictor columns the record holds.",
+                      "description": "too_few_predictors: the usable predictor columns the record holds (they vary, are not the outcome, an identifier or a time key, and do not restate the outcome).",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "predictive_columns": {
+                      "description": "too_few_predictors: the usable columns in which the engine found a candidate condition (chance ones included). A pattern needs 4.",
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
@@ -3600,7 +3771,7 @@
             "maximum": 9007199254740991
           },
           "progress": {
-            "description": "pending only, while the engine is fitting: its stage, how far along, and facts about the record so far (rows, the outcome, rows held out); no chance and no finding.",
+            "description": "pending only, while the engine is fitting: its stage, how far along, and facts about the record so far (rows, the outcome, rows held out, whether it checks by resampling); no chance and no finding.",
             "type": "object",
             "properties": {
               "stage": {
@@ -3640,12 +3811,20 @@
                   },
                   "outcome": {
                     "type": "string"
+                  },
+                  "bootstrap": {
+                    "description": "true when the record is small and the engine checks the pattern by resampling it rather than on held-out rows.",
+                    "type": "boolean"
                   }
                 },
                 "additionalProperties": {}
               }
             },
             "additionalProperties": {}
+          },
+          "watch_url": {
+            "description": "pending only: a page that shows this task's stages live and then its answer summary, for anyone holding the link (it shows no rows). The same stages stream as events from GET /v1/watch/{token}/events, or with the key from GET /v1/tasks/{task_id}/events. Valid while the answer is kept, 24 hours.",
+            "type": "string"
           },
           "page": {
             "description": "Only when the answer is larger than one MCP response: this response is its first page.",
@@ -4416,7 +4595,7 @@
                   "const": "unproductive"
                 },
                 "needs": {
-                  "description": "not_yet: how many more of each the record needs before a model can be checked. A too_few_predictors refusal: how many more usable columns.",
+                  "description": "not_yet: how many more of each the record needs before a model can be checked. A too_few_predictors refusal: how many more columns that carry signal.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
@@ -4433,7 +4612,7 @@
                       ]
                     },
                     "columns": {
-                      "description": "too_few_predictors: how many more usable predictor columns the record needs (a usable column varies, is not the outcome, an identifier or a time key, and does not restate the outcome).",
+                      "description": "too_few_predictors: the fewest more columns that carry real signal the record needs (4 minus have.predictive_columns); a column of noise does not count.",
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
@@ -4488,7 +4667,13 @@
                       "maximum": 9007199254740991
                     },
                     "columns": {
-                      "description": "too_few_predictors: the usable predictor columns the record holds.",
+                      "description": "too_few_predictors: the usable predictor columns the record holds (they vary, are not the outcome, an identifier or a time key, and do not restate the outcome).",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "predictive_columns": {
+                      "description": "too_few_predictors: the usable columns in which the engine found a candidate condition (chance ones included). A pattern needs 4.",
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
@@ -5170,6 +5355,10 @@
           "recommendation": {
             "description": "keep: the refit found the same pattern, renew with dg_extend_model. refit: switch to the new model_ref. abandon: stop asking. no_check_yet: nothing has been compared (pattern no_prior), so it is no reason to renew.",
             "type": "string"
+          },
+          "watch_url": {
+            "description": "A page with this model's calibration (observed rate against mean chance per band, with the 95% interval, as by_band gives them) and its latest drift check, for anyone holding the link. Valid 24 hours from this answer.",
+            "type": "string"
           }
         },
         "required": [
@@ -5678,6 +5867,10 @@
               ],
               "additionalProperties": {}
             }
+          },
+          "watch_url": {
+            "description": "A page with this model's calibration (observed rate against mean chance per band, with the 95% interval, as by_band gives them) and its latest drift check, for anyone holding the link. Valid 24 hours from this answer.",
+            "type": "string"
           }
         },
         "required": [
@@ -6547,7 +6740,7 @@
                   "const": "unproductive"
                 },
                 "needs": {
-                  "description": "not_yet: how many more of each the record needs before a model can be checked. A too_few_predictors refusal: how many more usable columns.",
+                  "description": "not_yet: how many more of each the record needs before a model can be checked. A too_few_predictors refusal: how many more columns that carry signal.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
@@ -6564,7 +6757,7 @@
                       ]
                     },
                     "columns": {
-                      "description": "too_few_predictors: how many more usable predictor columns the record needs (a usable column varies, is not the outcome, an identifier or a time key, and does not restate the outcome).",
+                      "description": "too_few_predictors: the fewest more columns that carry real signal the record needs (4 minus have.predictive_columns); a column of noise does not count.",
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
@@ -6619,7 +6812,13 @@
                       "maximum": 9007199254740991
                     },
                     "columns": {
-                      "description": "too_few_predictors: the usable predictor columns the record holds.",
+                      "description": "too_few_predictors: the usable predictor columns the record holds (they vary, are not the outcome, an identifier or a time key, and do not restate the outcome).",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "predictive_columns": {
+                      "description": "too_few_predictors: the usable columns in which the engine found a candidate condition (chance ones included). A pattern needs 4.",
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991

@@ -8,9 +8,11 @@
 """
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import random
+import re
 import shutil
 import socket
 import time
@@ -19,7 +21,8 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence
+from urllib.parse import quote
 
 from ._version import __version__
 
@@ -202,9 +205,134 @@ def _ns(namespace: Optional[str]) -> Dict[str, Any]:
     return {"namespace": namespace} if namespace is not None else {}
 
 
+#: The server sends a heartbeat every 15 s; three missed ones mean the connection is gone.
+EVENTS_READ_TIMEOUT_S = 45.0
+#: Reconnects in a row that bring nothing back (not even a heartbeat) before the stream is given up.
+EVENTS_MAX_EMPTY_RECONNECTS = 3
+#: Events after which the server closes the stream.
+EVENTS_FINAL = frozenset({"done", "error"})
+
+
+class _StreamUnavailable(Exception):
+    """The event stream could not be opened, or dropped and could not be resumed. Internal: `ask`
+    falls back to polling; `events` raises the problem instead."""
+
+    def __init__(self, error: DatagoatError) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
+class _Deadline(Exception):
+    """The ask's deadline passed while watching the stream."""
+
+
+def _problem_from_http(e: urllib.error.HTTPError, remedy: str) -> DatagoatError:
+    try:
+        p = json.load(e)
+    except Exception:  # noqa: BLE001
+        p = {}
+    return error_for(Problem(e.code, p.get("code", "http_error"), p.get("detail", str(e.reason)), p.get("remedy", remedy),
+                             p.get("field"), p.get("request_id") or e.headers.get("x-request-id"), p.get("doc_url")))
+
+
+_ASCII_DIGITS = re.compile(r"[0-9]+")
+
+
+def _event_id(eid: Optional[str]) -> Any:
+    """An event id as the server wrote it: an int when it is ASCII digits, else the text."""
+    return int(eid) if eid and _ASCII_DIGITS.fullmatch(eid) else eid
+
+
+def _set_read_timeout(resp: Any, seconds: float) -> None:
+    """The socket timeout for the next read. urlopen sets it once; a stream re-sets it before each
+    read so that neither the deadline nor the first-byte limit can be overshot."""
+    try:
+        resp.fp.raw._sock.settimeout(seconds)
+    except AttributeError:
+        pass
+
+
+def _sse_events(resp: Any, state: Dict[str, Any], deadline: float, first_byte_s: float) -> Iterator[Dict[str, Any]]:
+    """Parse one text/event-stream connection by the WHATWG rules: a line ends at CR, LF or CRLF (a
+    CR at the end of one read may be half of a CRLF), `field: value` lines, a blank line ends an
+    event, `:` starts a comment. Yields {event, id, data}; `data` is the JSON the server sent.
+    `state` carries the last event id (for Last-Event-ID) and whether anything arrived.
+
+    Raises _StreamUnavailable when nothing (not even a heartbeat) arrives within `first_byte_s`:
+    the server sends the current state first, so silence means a proxy is buffering the stream."""
+    decode = codecs.getincrementaldecoder("utf-8")("replace")
+    read = resp.read1 if hasattr(resp, "read1") else resp.readline
+    buf = ""
+    eof = False
+    event: Optional[str] = None
+    data: List[str] = []
+    while True:
+        # Take every whole line out of the buffer.
+        while True:
+            cr, lf = buf.find("\r"), buf.find("\n")
+            ends = [i for i in (cr, lf) if i >= 0]
+            if not ends:
+                break
+            i = min(ends)
+            if buf[i] == "\r" and i == len(buf) - 1 and not eof:
+                break  # wait: the next read may start with the LF of this CRLF
+            line = buf[:i]
+            buf = buf[i + (2 if buf.startswith("\r\n", i) else 1):]
+            if line == "":
+                if data:
+                    text = "\n".join(data)
+                    try:
+                        payload: Any = json.loads(text)
+                    except ValueError:
+                        payload = text
+                    yield {"event": event or "message", "id": _event_id(state.get("last_id")), "data": payload}
+                event, data = None, []
+                continue
+            if line.startswith(":"):
+                continue  # a heartbeat
+            name, _, value = line.partition(":")
+            if value.startswith(" "):
+                value = value[1:]
+            if name == "event":
+                event = value
+            elif name == "data":
+                data.append(value)
+            elif name == "id" and "\0" not in value:
+                state["last_id"] = value
+            elif name == "retry" and _ASCII_DIGITS.fullmatch(value):
+                state["retry_s"] = int(value) / 1000
+        if eof:
+            return  # the server closed the connection
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise _Deadline()
+        limit = EVENTS_READ_TIMEOUT_S if state.get("alive") else first_byte_s
+        _set_read_timeout(resp, max(0.05, min(limit, left)))
+        try:
+            raw = read(65536)
+        except (socket.timeout, TimeoutError):
+            if time.monotonic() >= deadline:
+                raise _Deadline() from None
+            if not state.get("alive"):
+                raise _StreamUnavailable(DatagoatError(Problem(503, "network_error", "the event stream sent nothing",
+                                                               "poll the task"))) from None
+            return  # silent past the heartbeat interval: a dropped connection
+        if not raw:
+            eof = True
+            buf += decode.decode(b"", final=True)
+            if buf and not buf.endswith(("\r", "\n")):
+                buf += "\n"  # an unterminated last line is still a line (it cannot end an event)
+            continue
+        state["alive"] = True
+        buf += decode.decode(raw)
+
+
 class Client:
     #: The longest Datagoat keeps a first fit running. `ask` never waits longer than this.
     RUN_TIMEOUT_S = 900.0
+    #: The server sends the task's current state as soon as the stream opens. A stream with nothing
+    #: in it after this long is being held back (a buffering proxy), and `ask` polls instead.
+    EVENTS_FIRST_BYTE_S = 10.0
 
     def __init__(self, api_key: Optional[str] = None, *, base_url: Optional[str] = None, timeout: float = 320.0,
                  max_retries: int = 2) -> None:
@@ -271,14 +399,116 @@ class Client:
             attempt += 1
             self._sleep(_backoff(attempt) if wait is None else min(wait, 60.0))
 
-    def _follow(self, out: Dict[str, Any], *, wait: bool, timeout_s: Optional[float],
-                on_progress: Optional[Callable[[Dict[str, Any]], None]]) -> Dict[str, Any]:
-        """Follow a pending task to its answer, bounded. Never re-submits: that would fit twice."""
+    def _open_events(self, task_id: str, last_id: Optional[str], deadline: float) -> Any:
+        headers = {"accept": "text/event-stream", "authorization": self._auth, "cache-control": "no-store",
+                   "user-agent": f"datagoat-python/{__version__}"}
+        if last_id and not any(c in last_id for c in "\r\n\0"):  # a header value never carries a line break
+            headers["last-event-id"] = last_id
+        req = urllib.request.Request(f"{self.base}/v1/tasks/{quote(task_id, safe='')}/events", method="GET", headers=headers)
+        timeout = max(0.5, min(EVENTS_READ_TIMEOUT_S, deadline - time.monotonic()))
+        try:
+            r = urllib.request.urlopen(req, timeout=timeout)  # noqa: S310 - fixed https base
+        except urllib.error.HTTPError as e:
+            raise _StreamUnavailable(_problem_from_http(e, f"poll({task_id!r})")) from None
+        except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout, OSError) as e:
+            raise _StreamUnavailable(DatagoatError(Problem(503, "network_error", str(getattr(e, "reason", e)),
+                                                           "check the connection, or poll the task"))) from None
+        if not (r.headers.get("content-type") or "").startswith("text/event-stream"):
+            r.close()
+            raise _StreamUnavailable(DatagoatError(Problem(r.status, "network_error", "the response is not an event stream",
+                                                           f"poll({task_id!r})")))
+        return r
+
+    def _stream(self, task_id: str, deadline: float, last_id: Optional[str] = None) -> Iterator[Dict[str, Any]]:
+        """Every event of a task's stream until done or error, reconnecting with Last-Event-ID when
+        the connection drops (the server also closes it at its own time limit). Raises
+        _StreamUnavailable when it cannot be opened, or dropped and could not be reopened, and
+        _Deadline when the deadline passes."""
+        state: Dict[str, Any] = {"last_id": last_id}
+        empty = 0
+        first = True
+        while True:
+            if time.monotonic() >= deadline:
+                raise _Deadline()
+            if not first:
+                # First reconnect at once; after one that brought nothing back, wait a little.
+                if empty:
+                    self._sleep(min(state.get("retry_s", 1.0), 5.0, max(0.0, deadline - time.monotonic())))
+            r = self._open_events(task_id, state.get("last_id"), deadline)
+            first = False
+            state["alive"] = False
+            try:
+                with r:
+                    for ev in _sse_events(r, state, deadline, self.EVENTS_FIRST_BYTE_S):
+                        yield ev
+                        if ev["event"] in EVENTS_FINAL:
+                            return
+            except (ConnectionError, TimeoutError, socket.timeout, OSError, ValueError):
+                pass  # a dropped connection: resume below
+            empty = 0 if state["alive"] else empty + 1
+            if empty >= EVENTS_MAX_EMPTY_RECONNECTS:
+                raise _StreamUnavailable(DatagoatError(Problem(503, "network_error", "the event stream keeps closing",
+                                                               f"poll({task_id!r})")))
+
+    def events(self, task_id: str, *, last_event_id: Optional[str] = None,
+               timeout_s: Optional[float] = None) -> Iterator[Dict[str, Any]]:
+        """The event stream of a pending ask, as dicts {event, id, data}: `stage` events (the stage,
+        its `message` sentence, `frac`, `fit`/`of` and the record's facts so far, all as the server
+        sent them), one `answer` per question, then `done` or `error`, where it stops. A dropped
+        connection is resumed from the last event id. The full answer comes from `poll(task_id)`.
+        Raises DatagoatError when the stream cannot be opened (a server without it answers 404),
+        and poll_timeout after `timeout_s` (default RUN_TIMEOUT_S).
+
+        Leaving the loop early leaves the connection open until the iterator is closed:
+        `with contextlib.closing(dg.events(task_id)) as evs: ...`, or `evs.close()`."""
         deadline = time.monotonic() + (self.RUN_TIMEOUT_S if timeout_s is None else timeout_s)
+        try:
+            yield from self._stream(task_id, deadline, last_event_id)
+        except _StreamUnavailable as e:
+            raise e.error from None
+        except _Deadline:
+            raise DatagoatError(Problem(504, "poll_timeout", "the task is still running",
+                                        f"poll({task_id!r}) later; do not re-submit (that would fit twice)")) from None
+
+    def _watch(self, task_id: str, deadline: float, on_progress: Optional[Callable[[Dict[str, Any]], None]],
+               on_event: Optional[Callable[[Dict[str, Any]], None]]) -> bool:
+        """Watch the stream until done or error: True when it got there, False when the stream is not
+        available (the caller then polls). A callback's own exception is not caught here."""
+        it = self._stream(task_id, deadline)
+        while True:
+            try:
+                ev = next(it)
+            except StopIteration:
+                return True
+            except _StreamUnavailable:
+                return False
+            if on_event is not None:
+                on_event(ev)
+            if ev["event"] == "stage" and on_progress is not None and isinstance(ev["data"], dict):
+                on_progress(ev["data"])
+
+    def _follow(self, out: Dict[str, Any], *, wait: bool, timeout_s: Optional[float],
+                on_progress: Optional[Callable[[Dict[str, Any]], None]],
+                on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
+        """Follow a pending task to its answer, bounded. Never re-submits: that would fit twice.
+        With a callback, the task's event stream is watched first; without one, or when the stream
+        is not there, the task is polled as before."""
+        deadline = time.monotonic() + (self.RUN_TIMEOUT_S if timeout_s is None else timeout_s)
+        watched = False
         while wait and out.get("status") == "pending":
+            task_id = out["task_id"]
+            if not watched and (on_progress is not None or on_event is not None):
+                watched = True
+                try:
+                    reached_end = self._watch(task_id, deadline, on_progress, on_event)
+                except _Deadline:
+                    raise DatagoatError(Problem(504, "poll_timeout", "the task is still running",
+                                                f"poll({task_id!r}) later; do not re-submit (that would fit twice)")) from None
+                if reached_end:
+                    out = self.poll(task_id)
+                    continue
             if on_progress is not None:
                 on_progress(out)
-            task_id = out["task_id"]
             if time.monotonic() >= deadline:
                 raise DatagoatError(Problem(504, "poll_timeout", "the task is still running",
                                             f"poll({task_id!r}) later; do not re-submit (that would fit twice)"))
@@ -296,7 +526,8 @@ class Client:
             export: Optional[str] = None, model_ttl_days: Optional[int] = None,
             group_column: Optional[str] = None, namespace: Optional[str] = None,
             response_format: Optional[str] = None, wait: bool = True, timeout_s: Optional[float] = None,
-            on_progress: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
+            on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+            on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
         """Ask typed questions about cases, answered from a record of past outcomes.
 
         Build questions with `yesno`, `score`, `choice`, `rank`. `cases` is {"ids": [...]} or
@@ -318,6 +549,12 @@ class Client:
 
         A first fit on a large record answers pending; `ask` polls it to the end. Sending the ask
         again instead of polling would start (and bill) a second fit.
+
+        `on_progress(event)` is called for each stage the server reports while a fit runs: a dict
+        with `stage`, `message` (the sentence to show, verbatim), `elapsed_ms`, `facts` and, when
+        known, `frac`, `fit` and `of`. It comes from the task's event stream (`events`); where the
+        stream cannot be opened, `ask` polls as before and `on_progress` gets each pending poll
+        body (it has `status: "pending"`). `on_event` gets every stream event as {event, id, data}.
         """
         if not questions:
             raise ValueError("ask needs at least one question")
@@ -353,7 +590,8 @@ class Client:
         for k, v in (("model_ttl_days", model_ttl_days), ("group_column", group_column), ("namespace", namespace)):
             if v is not None:
                 body[k] = v
-        return self._whole(self._follow(self._call("ask", body), wait=wait, timeout_s=timeout_s, on_progress=on_progress))
+        return self._whole(self._follow(self._call("ask", body), wait=wait, timeout_s=timeout_s, on_progress=on_progress,
+                                        on_event=on_event))
 
     def _whole(self, out: Dict[str, Any]) -> Dict[str, Any]:
         """REST answers come whole; should one ever arrive paged, fetch the rest and join it."""

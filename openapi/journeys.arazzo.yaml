@@ -4,7 +4,7 @@ info:
   title: "Datagoat journeys"
   summary: "The five journeys as workflows: the first call of each and the call after it."
   description: "Generated from src/core/journeys.ts by npm run spec:build; the same list dg_describe, the MCP prompts, the skills and the docs are built from."
-  version: "1.7.0"
+  version: "1.8.0"
 sourceDescriptions:
   - name: datagoat
     url: "./openapi.json"

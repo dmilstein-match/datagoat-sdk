@@ -94,6 +94,31 @@ verify_offline(v["verdict"], v["signature"], fetch_keys())   # "valid", with no 
 dg.track_record(ref)                                         # the model's calls against reported outcomes
 ```
 
+## Watching a fit
+
+A first fit on a large record answers `pending`, and `ask` waits for it. With `on_progress`, it
+reads the task's event stream while it waits and passes on each stage the server reports, with
+its `message` (the sentence to show, verbatim), `elapsed_ms`, `facts` and, when known, `frac`:
+
+```python
+out = dg.ask({"churn": yesno("churned", outcome_is_desirable=False)}, dataset_id="sample:saas_churn",
+             entity_column="customer_id", subject_kind="org", cases={"ids": ["cust_0001"]},
+             on_progress=lambda e: print(e.get("message") or e.get("status")))
+# dg.events(task_id) is the same stream as an iterator of {event, id, data}
+```
+
+A dropped connection resumes from the last event. Where there is no stream, `ask` polls as before
+and `on_progress` gets each pending poll body. The answer itself always comes from `poll`.
+
+```bash
+pip install "datagoat[watch]"        # adds rich, for the live checklist
+datagoat ask '{"churn": {"type": "yesno", "outcome_column": "churned"}}' \
+  --data sample:saas_churn --entity customer_id --cases cust_0001 --watch
+```
+
+`--watch` ticks each finished stage with its time and spins on the current one (plain lines when
+not on a terminal, on stderr); `--events` prints every event, then the answer, as JSON lines.
+
 ## Errors
 
 Every error is a `DatagoatError` with `problem.code`, `problem.remedy`, `problem.field` and

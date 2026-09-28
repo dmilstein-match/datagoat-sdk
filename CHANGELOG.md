@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.9.0
+
+- Watching a fit. `ask(..., on_progress=fn)` / `ask({ onProgress })`: while a first fit runs, the
+  task's event stream (`GET /v1/tasks/{task_id}/events`, same key) is read and `fn` gets each stage
+  the server reports: `stage`, `message` (the sentence, verbatim), `elapsed_ms`, `facts`, and
+  `frac`, `fit`, `of` when known. A dropped connection resumes with `Last-Event-ID`. Where the
+  stream cannot be opened, the SDK polls as before (same deadline) and `fn` gets each pending poll
+  body, as in 1.8.0. Without a callback nothing changes: the stream is not opened.
+- `events(task_id)` (Python iterator) / `events(taskId)` (TypeScript `AsyncIterable`): every event
+  as `{event, id, data}`: `stage`, one `answer` per question, then `done` or `error`. `on_event` /
+  `onEvent` on `ask` gets the same events.
+- CLI: `datagoat ask ... --watch` draws each reported stage (a live checklist with
+  `pip install "datagoat[watch]"` on a terminal; plain lines otherwise, on stderr). `--events`
+  prints every event, then the answer, as JSON lines.
+- No new required dependency; the answer and its Verdicts are unchanged.
+
 ## 1.8.0
 
 - Contract 1.7.0. Typed errors under `DatagoatError`, one per code family: `ValidationError`

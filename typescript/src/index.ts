@@ -189,8 +189,34 @@ export interface AskOptions {
   response_format?: "full" | "concise";
   /** Follow a pending first fit to its answer (default true), for at most timeoutMs (default 15 min). */
   wait?: boolean; timeoutMs?: number;
+  /** Called for each stage the server reports while a fit runs, from the task's event stream
+   *  (`message` is the sentence to show, verbatim). Where the stream cannot be opened, the task is
+   *  polled as before and this gets each pending poll body (`status: "pending"`). */
+  onProgress?: (e: StageEvent | PendingPoll) => void;
+  /** Every event of the task's stream, as { event, id, data }. */
+  onEvent?: (e: TaskEvent) => void;
 }
 export type Answer = Record<string, unknown> & { status: "done" | "pending"; task_id?: string; answers?: Record<string, any> };
+/** A pending poll body: what onProgress gets when there is no event stream to read. */
+export type PendingPoll = Answer & { status: "pending" };
+/** A stage the server reported, verbatim. `message` is the sentence; nothing here composes one. */
+export interface StageEvent {
+  task_id: string; stage: string; frac?: number; fit?: number; of?: number;
+  facts: { rows?: number; outcome?: string; training_rows?: number; held_out_rows?: number; bootstrap?: unknown; [k: string]: unknown };
+  message: string; elapsed_ms: number; [k: string]: unknown;
+}
+/** One event of GET /v1/tasks/{task_id}/events: `stage`, `answer` (one per question), then `done` or `error`. */
+export interface TaskEvent { event: "stage" | "answer" | "done" | "error" | (string & {}); id?: number | string; data: unknown }
+
+/** The server sends a heartbeat every 15 s; three missed ones mean the connection is gone. */
+const EVENTS_READ_TIMEOUT_MS = 45_000;
+/** Reconnects in a row that bring nothing back (not even a heartbeat) before the stream is given up. */
+const EVENTS_MAX_EMPTY_RECONNECTS = 3;
+/** The stream could not be opened, or dropped and could not be reopened. ask() then polls. */
+class StreamUnavailable extends Error { constructor(readonly error: DatagoatError) { super(error.message); } }
+/** The ask's deadline passed while watching the stream. */
+class DeadlinePassed extends Error {}
+const pollTimeout = (taskId: string) => new DatagoatError({ status: 504, code: "poll_timeout", detail: "the task is still running", remedy: `poll("${taskId}") later; do not re-submit (that would fit twice)` });
 
 export class Datagoat {
   readonly base: string;
@@ -198,6 +224,9 @@ export class Datagoat {
   private readonly maxRetries: number;
   /** Replaceable in tests. */
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((res) => setTimeout(res, ms));
+  /** The server sends the task's current state as soon as the stream opens. A stream with nothing
+   *  in it after this long is being held back (a buffering proxy), and ask() polls instead. */
+  eventsFirstByteMs = 10_000;
   constructor(opts: { apiKey: string; baseUrl?: string; fetch?: typeof fetch; maxRetries?: number }) {
     if (!opts.apiKey) throw new Error("apiKey is required (a dgk_live_ or dgk_test_ key)");
     this.auth = `Bearer ${opts.apiKey}`;
@@ -263,15 +292,152 @@ export class Datagoat {
   async ask(questions: Record<string, Question>, o: AskOptions): Promise<Answer> {
     if (!Object.keys(questions).length) throw new Error("ask needs at least one question");
     if (o.export !== undefined && o.export !== "csv") throw new Error('export is "csv"');
-    const { wait = true, timeoutMs = 15 * 60_000, ...rest } = o;
+    const { wait = true, timeoutMs = 15 * 60_000, onProgress, onEvent, ...rest } = o;
     let out = await this.call<Answer>("ask", { ...rest, questions, idempotency_key: o.idempotency_key ?? crypto.randomUUID() });
     const deadline = Date.now() + timeoutMs;
+    let watched = false;
     while (wait && out.status === "pending") {
-      if (Date.now() >= deadline) throw new DatagoatError({ status: 504, code: "poll_timeout", detail: "the task is still running", remedy: `poll("${out.task_id}") later; do not re-submit (that would fit twice)` });
+      const taskId = String(out.task_id);
+      // With a callback, watch the event stream first; without one, or with no stream, poll as before.
+      if (!watched && (onProgress || onEvent)) {
+        watched = true;
+        if (await this.watch(taskId, deadline, onProgress, onEvent)) { out = await this.poll(taskId); continue; }
+      }
+      onProgress?.(out as PendingPoll);
+      if (Date.now() >= deadline) throw pollTimeout(taskId);
       await this.sleep(Math.max(500, Number(out.retry_after_ms ?? 2000)));
-      out = await this.poll(String(out.task_id));
+      out = await this.poll(taskId);
     }
     return this.whole(out);
+  }
+
+  /** Watch a task's stream to done or error: true when it got there, false when there is no stream
+   *  (the caller polls). A callback's own error is not caught here. */
+  private async watch(taskId: string, deadline: number, onProgress: AskOptions["onProgress"], onEvent: AskOptions["onEvent"]): Promise<boolean> {
+    try {
+      for await (const ev of this.stream(taskId, deadline)) {
+        onEvent?.(ev);
+        if (ev.event === "stage" && ev.data && typeof ev.data === "object") onProgress?.(ev.data as StageEvent);
+      }
+      return true;
+    } catch (e) {
+      if (e instanceof StreamUnavailable) return false;
+      if (e instanceof DeadlinePassed) throw pollTimeout(taskId);
+      throw e;
+    }
+  }
+
+  /**
+   * The event stream of a pending ask (GET /v1/tasks/{task_id}/events), as { event, id, data }:
+   * `stage` events (the stage, its `message` sentence, `frac`, `fit`/`of` and the facts so far, all
+   * as the server sent them), one `answer` per question, then `done` or `error`, where it stops. A
+   * dropped connection is resumed from the last event id. The full answer comes from poll(taskId).
+   * Throws the problem when the stream cannot be opened (a server without it answers 404), and
+   * poll_timeout after timeoutMs (default 15 minutes). Works wherever fetch streams a body.
+   * Leaving a `for await` loop early (break, return, throw) closes the connection.
+   */
+  async *events(taskId: string, o: { lastEventId?: string; timeoutMs?: number } = {}): AsyncGenerator<TaskEvent, void, undefined> {
+    try {
+      yield* this.stream(taskId, Date.now() + (o.timeoutMs ?? 15 * 60_000), o.lastEventId);
+    } catch (e) {
+      if (e instanceof StreamUnavailable) throw e.error;
+      if (e instanceof DeadlinePassed) throw pollTimeout(taskId);
+      throw e;
+    }
+  }
+
+  private async openEvents(taskId: string, lastId: string | undefined, signal: AbortSignal): Promise<Response> {
+    const headers: Record<string, string> = { accept: "text/event-stream", authorization: this.auth, "cache-control": "no-store" };
+    if (lastId && !/[\r\n\0]/.test(lastId)) headers["last-event-id"] = lastId; // a header value never carries a line break
+    let r: Response;
+    try {
+      r = await this.f(`${this.base}/v1/tasks/${encodeURIComponent(taskId)}/events`, { method: "GET", headers, signal });
+    } catch (e) {
+      throw new StreamUnavailable(new DatagoatError({ status: 503, code: "network_error", detail: String((e as Error).message), remedy: "check the connection, or poll the task" }));
+    }
+    if (!r.ok) {
+      const json = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+      throw new StreamUnavailable(errorFor({ status: r.status, code: String(json.code ?? "http_error"), detail: String(json.detail ?? r.statusText), remedy: String(json.remedy ?? `poll("${taskId}")`), ...(json.doc_url ? { doc_url: String(json.doc_url) } : {}) }));
+    }
+    if (!(r.headers.get("content-type") ?? "").startsWith("text/event-stream") || !r.body) {
+      await r.body?.cancel().catch(() => undefined);
+      throw new StreamUnavailable(new DatagoatError({ status: r.status, code: "network_error", detail: "the response is not an event stream", remedy: `poll("${taskId}")` }));
+    }
+    return r;
+  }
+
+  /** Every event of a task's stream until done or error, reconnecting with Last-Event-ID when the
+   *  connection drops (the server also closes it at its own time limit). Parses text/event-stream
+   *  by the WHATWG rules: `field: value` lines, a blank line ends an event, `:` starts a comment. */
+  private async *stream(taskId: string, deadline: number, lastEventId?: string): AsyncGenerator<TaskEvent, void, undefined> {
+    let lastId = lastEventId;
+    let retryMs = 1000;
+    let empty = 0;
+    for (let first = true; ; first = false) {
+      if (Date.now() >= deadline) throw new DeadlinePassed();
+      // First reconnect at once; after one that brought nothing back, wait a little.
+      if (!first && empty) await this.sleep(Math.min(retryMs, 5000, Math.max(0, deadline - Date.now())));
+      const ac = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let alive = false, timedOut = false;
+      // Re-armed on every chunk: the first-byte limit until something arrives, then the heartbeat
+      // limit, never past the deadline.
+      const arm = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => { timedOut = true; ac.abort(); }, Math.max(1, Math.min(alive ? EVENTS_READ_TIMEOUT_MS : this.eventsFirstByteMs, deadline - Date.now())));
+      };
+      arm();
+      let r: Response;
+      try { r = await this.openEvents(taskId, lastId, ac.signal); } catch (e) { clearTimeout(timer); if (Date.now() >= deadline) throw new DeadlinePassed(); throw e; }
+      const reader = r.body!.getReader();
+      const dec = new TextDecoder();
+      let buf = "", event: string | undefined, data: string[] = [];
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          alive = true;
+          arm();
+          buf += dec.decode(value, { stream: true });
+          for (let i = buf.search(/\r\n|\n|\r/); i >= 0; i = buf.search(/\r\n|\n|\r/)) {
+            if (buf[i] === "\r" && i === buf.length - 1) break; // a CR that may be half of a CRLF: wait for more
+            const line = buf.slice(0, i);
+            buf = buf.slice(i + (buf.startsWith("\r\n", i) ? 2 : 1));
+            if (line === "") {
+              if (data.length) {
+                const text = data.join("\n");
+                let payload: unknown = text;
+                try { payload = JSON.parse(text); } catch { /* not JSON: passed on as text */ }
+                const ev: TaskEvent = { event: event ?? "message", ...(lastId !== undefined ? { id: /^\d+$/.test(lastId) ? Number(lastId) : lastId } : {}), data: payload };
+                yield ev;
+                if (ev.event === "done" || ev.event === "error") return;
+              }
+              event = undefined; data = [];
+              continue;
+            }
+            if (line.startsWith(":")) continue; // a heartbeat
+            const c = line.indexOf(":");
+            const name = c < 0 ? line : line.slice(0, c);
+            let v = c < 0 ? "" : line.slice(c + 1);
+            if (v.startsWith(" ")) v = v.slice(1);
+            if (name === "event") event = v;
+            else if (name === "data") data.push(v);
+            else if (name === "id" && !v.includes("\0")) lastId = v;
+            else if (name === "retry" && /^\d+$/.test(v)) retryMs = Number(v);
+          }
+          if (Date.now() >= deadline) throw new DeadlinePassed();
+        }
+      } catch (e) {
+        if (e instanceof DeadlinePassed || Date.now() >= deadline) throw new DeadlinePassed();
+        if (timedOut && !alive) throw new StreamUnavailable(new DatagoatError({ status: 503, code: "network_error", detail: "the event stream sent nothing", remedy: `poll("${taskId}")` }));
+        // anything else is a dropped connection: resume below
+      } finally {
+        clearTimeout(timer);
+        reader.cancel().catch(() => undefined);
+      }
+      empty = alive ? 0 : empty + 1;
+      if (empty >= EVENTS_MAX_EMPTY_RECONNECTS) throw new StreamUnavailable(new DatagoatError({ status: 503, code: "network_error", detail: "the event stream keeps closing", remedy: `poll("${taskId}")` }));
+    }
   }
 
   /** REST answers come whole; should one ever arrive paged, fetch the rest and join it. */
