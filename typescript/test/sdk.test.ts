@@ -55,7 +55,9 @@ test("attest and evidence call their routes", async () => {
   const dg = new Datagoat({ apiKey: "dgk_live_x", baseUrl: "http://x", fetch: f });
   await dg.attest({ model_ref: "mr1_x", entity_id: "a", lever_token: "hsct1.t", post_value: "two_year", acted_at: "2026-10-01" });
   await dg.evidence("mr1_x");
-  assert.deepEqual(seen, ["/v1/attest", "/v1/evidence"]);
+  await dg.trackRecord("mr1_x");
+  await dg.profile({ namespace: "acme" });
+  assert.deepEqual(seen, ["/v1/attest", "/v1/evidence", "/v1/track-record", "/v1/profile"]);
 });
 
 // -- real-world volume: retries, pages, exports, many cases --------------------------------------

@@ -428,6 +428,24 @@ class Client:
         """Did acting work? Outcomes of cases acted on vs not, once each group has 30 with an outcome."""
         return self._call("evidence", {"model_ref": model_ref, **_ns(namespace)})
 
+    def track_record(self, model_ref: str, *, namespace: Optional[str] = None) -> Dict[str, Any]:
+        """How the model's earlier calls held up: each reported outcome paired with the latest
+        answer about that case given before it, overall and by band, level and chance range."""
+        return self._call("track-record", {"model_ref": model_ref, **_ns(namespace)})
+
+    def profile(self, namespace: Optional[str] = None, *, words: Optional[Mapping[str, Any]] = None,
+                exclude: Optional[Sequence[str]] = None, display: Optional[str] = None) -> Dict[str, Any]:
+        """A namespace's profile. With words, exclude or display it replaces the profile; without,
+        it returns the current one (or profile None)."""
+        body: Dict[str, Any] = {**_ns(namespace)}
+        if words is not None:
+            body["words"] = dict(words)
+        if exclude is not None:
+            body["exclude"] = list(exclude)
+        if display is not None:
+            body["display"] = display
+        return self._call("profile", body)
+
     def drift(self, model_ref: str, *, namespace: Optional[str] = None) -> Dict[str, Any]:
         return self._call("drift", {"model_ref": model_ref, **_ns(namespace)})
 

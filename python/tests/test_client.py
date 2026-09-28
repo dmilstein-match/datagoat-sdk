@@ -170,12 +170,18 @@ def test_shapes_are_sent_as_stated_and_delete_dataset_calls_its_route():
 def test_attest_and_evidence_call_their_routes():
     SEEN.clear()
     srv, base = serve([{"compliant": True, "dose_fraction": 1.0, "evaluated_feature": "contract", "evaluated_direction": "change", "event_id": "e", "written": True},
-                       {"model_ref": "mr1_x", "live": None}])
+                       {"model_ref": "mr1_x", "live": None},
+                       {"model_ref": "mr1_x", "overall": {"calls": 0}},
+                       {"namespace": "acme", "profile": None}])
     dg = Client("dgk_live_x", base_url=base)
     assert dg.attest("mr1_x", "acct_0020", "hsct1.t", "two_year", "2026-10-01", event_id="a1")["compliant"] is True
     assert SEEN[0][0] == "/v1/attest" and SEEN[0][1]["event_id"] == "a1"
     assert dg.evidence("mr1_x")["live"] is None
     assert SEEN[1] [0] == "/v1/evidence"
+    assert dg.track_record("mr1_x")["overall"]["calls"] == 0
+    assert SEEN[2][0] == "/v1/track-record"
+    assert dg.profile("acme", display="bands")["namespace"] == "acme"
+    assert SEEN[3][0] == "/v1/profile" and SEEN[3][1] == {"namespace": "acme", "display": "bands"}
     srv.shutdown()
 
 

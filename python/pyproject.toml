@@ -1,6 +1,6 @@
 [project]
 name = "datagoat"
-version = "1.6.0"
+version = "1.7.0"
 description = "Ask yesno, score, choice and rank questions about cases, answered from what happened to cases like them. Deterministic, with reasons and signed Verdicts."
 keywords = ["datagoat", "prediction", "churn", "ranking", "decision", "mcp", "verdict", "deterministic"]
 requires-python = ">=3.9"

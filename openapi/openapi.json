@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Datagoat API",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "description": "Ask yes/no, score, choice and rank questions about cases. Datagoat answers from what happened to cases like them: deterministic, with reasons, signed, and it refuses rather than guess. MCP: https://api.datagoat.io/mcp",
     "contact": {
       "url": "https://datagoat.io"
@@ -33,11 +33,11 @@
       "post": {
         "operationId": "dg_ask",
         "summary": "Ask",
-        "description": "Answers typed questions about cases from a record of past outcomes. A call sends the record (data), questions keyed by id, and the cases to answer; answers return keyed by the same ids. Question types: yesno (the chance the outcome happens), score (that chance as a level: unlikely, possible, likely, very_likely), choice (the best option for each case, with each option's chance, most_likely and least_likely; choice is the only type that needs outcome_is_desirable), rank (cases in order of the chance). Questions about one record can share one call, and questions on the same outcome and outcome_is_desirable share one fit. The record can be a table (one row per case) or, with shape, an event log, a time series, a panel, sensor signals, agent traces, or snapshots (an event log read as of each moment in a snapshot table, e.g. a deal at each stage). Building a product: namespace keeps each of your customers' models and usage apart; model_ttl_days (1 to 365) sets how long a fitted model answers; a question that names model_ref instead of outcome_column scores new cases from that model with no fit (send cases.rows, or a newer record and cases.ids), and every answer lists model_columns, the columns its model reads. Each answer has a state: answered; refused (the record holds no pattern that holds on held-out rows, and the same call returns the same refusal); or not_yet (too few labeled rows; needs.labeled_rows gives how many more). An answered question carries, per case, p and up to four reasons (feature_label, value, likelihood_direction, strength, and range: the band of values the case's value fell in, e.g. \"tenure_months 9 to under 17\"), and a signed Verdict covering its cases. yesno, score and rank answers also carry pattern: the conditions, with cut points, under which the outcome is most common (e.g. \"support_tickets over 3\"), and per case pattern_match {matched, of, met}. Reasons and patterns are associations, not causes; likelihood_direction is the direction the chance moved, not whether that is good news. Answers are deterministic: the same record and question give the same answer. A first fit on a large record returns status pending with a task_id for dg_poll. Over MCP, an answer larger than one tool result (about 60,000 characters, roughly 60 cases with their Verdict) returns its first page: each list carries page {offset, returned, total}, page.next_cursor leads to the rest through dg_page, and page.answer_url downloads the whole answer as JSON. export: csv adds a CSV download of every case. Free to try on the samples, e.g. data.dataset_id sample:saas_churn, entity_column customer_id, outcome_column churned, cases {ids: [\"cust_0001\"]}. Cost: one decision per answered case, and a fit the first time a record is asked about (1,000 free fits a month, then $0.01 each); refusals and not_yet bill no decisions, and the samples are free",
+        "description": "Answers typed questions about cases from a record of past outcomes. A call sends the record (data), questions keyed by id, and the cases to answer; answers return keyed by the same ids. Question types: yesno (the chance the outcome happens), score (that chance as a level: unlikely, possible, likely, very_likely), choice (the best option for each case, with each option's chance, most_likely and least_likely; choice is the only type that needs outcome_is_desirable), rank (cases in order of the chance). Questions about one record can share one call, and questions on the same outcome and outcome_is_desirable share one fit. The record can be a table (one row per case) or, with shape, an event log, a time series, a panel, sensor signals, agent traces, or snapshots (an event log read as of each moment in a snapshot table, e.g. a deal at each stage). Building a product: namespace keeps each of your customers' models and usage apart; model_ttl_days (1 to 365) sets how long a fitted model answers; a question that names model_ref instead of outcome_column scores new cases from that model with no fit (send cases.rows, or a newer record and cases.ids), and every answer lists model_columns, the columns its model reads. Each answer has a state: answered; refused (the record holds no pattern that holds on held-out rows, and the same call returns the same refusal); or not_yet (too few labeled rows or positives; needs gives how many more of each, and reasons name what is short). A case the model cannot read (a column it reads is absent, or a value it never saw) comes back as state not_scoreable, naming them, with no chance; it bills nothing. An answered question carries, per case, p and up to four reasons (feature_label, value, likelihood_direction, strength, and range: the band of values the case's value fell in, e.g. \"tenure_months 9 to under 17\"), and a signed Verdict covering its cases. yesno, score and rank answers also carry pattern: the conditions, with cut points, under which the outcome is most common (e.g. \"support_tickets over 3\"), and per case pattern_match {matched, of, met}. Reasons and patterns are associations, not causes; likelihood_direction is the direction the chance moved, not whether that is good news. Answers are deterministic: the same record and question give the same answer. A first fit on a large record returns status pending with a task_id for dg_poll. Over MCP, an answer larger than one tool result (about 60,000 characters, roughly 60 cases with their Verdict) returns its first page: each list carries page {offset, returned, total}, page.next_cursor leads to the rest through dg_page, and page.answer_url downloads the whole answer as JSON. export: csv adds a CSV download of every case. Free to try on the samples, e.g. data.dataset_id sample:saas_churn, entity_column customer_id, outcome_column churned, cases {ids: [\"cust_0001\"]}. Cost: one decision per answered case, and a fit the first time a record is asked about or when a question names refit_of (1,000 free fits a month, then $0.01 each); refusals and not_yet bill no decisions, and the samples are free",
         "tags": [
           "ask"
         ],
-        "x-dg-cost": "one decision per answered case; the first ask on a record also runs a fit",
+        "x-dg-cost": "one decision per answered case; the first ask on a record, or a question with refit_of, also runs a fit",
         "requestBody": {
           "required": true,
           "content": {
@@ -722,6 +722,128 @@
         }
       }
     },
+    "/v1/track-record": {
+      "post": {
+        "operationId": "dg_track_record",
+        "summary": "How the model's calls held up",
+        "description": "Free. For a model_ref, sets what the model said about each case against what then happened (the outcomes sent with dg_report_outcomes). Each outcome is paired with the latest answer about that case given on or before the day it was observed; an outcome with no earlier answer is counted in outcomes_without_an_earlier_answer, not paired. overall, and each entry of by_band, by_level and by_chance, give calls, happened, observed_rate, its 95% interval (interval_95) and mean_chance, the average chance the model gave: a calibrated model's observed_rate sits near its mean_chance. A case reported more than once counts once, with its latest outcome. small_n is true below 100 calls. Kept: yesno and score answers, and the top_k cases of a rank (so a rank's by_chance leans high); choice answers are not kept. Answers are kept from records_since on",
+        "tags": [
+          "supporting"
+        ],
+        "x-dg-cost": "free",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dg_track_record_input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/dg_track_record_output"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited: this workspace has used its requests for this minute. Retry-After and retry_after_ms say how long to wait.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/profile": {
+      "post": {
+        "operationId": "dg_profile",
+        "summary": "A namespace's profile",
+        "description": "Free. The profile of a namespace (one of your customers): the words its answers use, columns never used, and what its end users see. Sent with words, exclude or display, it replaces the whole profile (a field left out is reset); sent with only namespace (or nothing, for the workspace itself), it returns the current one. words: case (what a case is called, e.g. customer), outcome (the outcome in plain words, e.g. cancels), columns (a phrase per column, e.g. {\"tenure_months\": \"months as a customer\"}). exclude: columns of a table record that no fit in this namespace uses (a new fit, so a new model_ref); the columns that frame a question (outcome, entity, time, group) and columns the record lacks are left out of it, and a shaped record or a model_ref question is not affected (the answer's profile.exclusions_applied says whether they were used). display: chance (default) or bands; with bands, the sentence each case carries names its band, and the answer says display bands, a signal for an end-user surface to show bands only (the API still returns every chance). Each answer in the namespace then carries profile {hash, display, exclusions_applied} and, per case, says: one sentence built from these words and the engine's own values, verbatim. Each Verdict names the profile's hash.",
+        "tags": [
+          "supporting"
+        ],
+        "x-dg-cost": "free",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dg_profile_input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/dg_profile_output"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited: this workspace has used its requests for this minute. Retry-After and retry_after_ms say how long to wait.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/page": {
       "post": {
         "operationId": "dg_page",
@@ -1268,7 +1390,7 @@
                   "maximum": 1000
                 },
                 "refit_of": {
-                  "description": "The model_ref of an earlier answer on an older version of this record. Adds a drift report, and links the two for dg_drift.",
+                  "description": "The model_ref of an earlier answer on an older version of this record. Adds a drift report, and links the two for dg_drift. A question with refit_of always runs its fit, even on a record asked about before, so the refit is recorded; it counts as a fit.",
                   "type": "string",
                   "pattern": "^mr1_[0-9a-f]{32}$"
                 },
@@ -1942,6 +2064,54 @@
             "minimum": -9007199254740991,
             "maximum": 9007199254740991
           },
+          "progress": {
+            "description": "pending only, while the engine is fitting: its stage, how far along, and facts about the record so far (rows, the outcome, rows held out); no chance and no finding.",
+            "type": "object",
+            "properties": {
+              "stage": {
+                "type": "string"
+              },
+              "frac": {
+                "description": "How far along, 0 to 1, across the call's fits.",
+                "type": "number"
+              },
+              "fit": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "of": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "facts_so_far": {
+                "type": "object",
+                "properties": {
+                  "rows": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "training_rows": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "held_out_rows": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "outcome": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": {}
+              }
+            },
+            "additionalProperties": {}
+          },
           "page": {
             "description": "Only when the answer is larger than one MCP response: this response is its first page.",
             "type": "object",
@@ -2022,13 +2192,52 @@
                   ]
                 },
                 "state": {
-                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows; the same call returns the same refusal. not_yet: too few labeled rows; needs.labeled_rows says how many more.",
+                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows; the same call returns the same refusal. not_yet: too few labeled rows or positives (rows where the outcome happened) to check a model; reasons name what is short (too_few_labeled_rows, too_few_positives, no_positives when the outcome's yes values match no row, too_few_to_hold_out when neither count explains it), needs says how many more of each (0 when that one is not short), and have says what the record holds.",
                   "type": "string",
                   "enum": [
                     "answered",
                     "refused",
                     "not_yet"
                   ]
+                },
+                "decision": {
+                  "description": "The state as a decision: actionable when answered, else not_yet or refused. A pure mapping of state, no new number. Per case, band (with band: true) and not_scoreable still apply.",
+                  "type": "string",
+                  "enum": [
+                    "actionable",
+                    "not_yet",
+                    "refused"
+                  ]
+                },
+                "next": {
+                  "description": "The operations that make sense after this answer, each with its cost and what it gives. Data, not instructions.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "description": "A Datagoat operation.",
+                        "type": "string"
+                      },
+                      "with": {
+                        "description": "The input that makes it this step, e.g. model_ref or refit_of.",
+                        "type": "string"
+                      },
+                      "cost": {
+                        "type": "string"
+                      },
+                      "gives": {
+                        "description": "What the operation returns here.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "operation",
+                      "cost",
+                      "gives"
+                    ],
+                    "additionalProperties": {}
+                  }
                 },
                 "cache": {
                   "type": "string",
@@ -2143,8 +2352,40 @@
                       "entity_id": {
                         "type": "string"
                       },
+                      "state": {
+                        "description": "Only on a case the model cannot read: it has no chance, no reasons and no Verdict, and it bills nothing. not_scoreable says what is missing or unseen.",
+                        "type": "string",
+                        "const": "not_scoreable"
+                      },
+                      "not_scoreable": {
+                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "type": "object",
+                        "properties": {
+                          "missing_columns": {
+                            "description": "Columns the model reads that this case lacks.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "unseen_values": {
+                            "description": "Per column, the values the model cannot read: a category it never saw, text outside the levels it learned, or a non-number where it reads a number.",
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "additionalProperties": {}
+                      },
                       "p": {
-                        "description": "The chance, 0 to 1. For choice, a map of option to chance.",
+                        "description": "The chance, 0 to 1. For choice, a map of option to chance. Absent on a not_scoreable case.",
                         "anyOf": [
                           {
                             "type": "number"
@@ -2332,9 +2573,7 @@
                       }
                     },
                     "required": [
-                      "entity_id",
-                      "p",
-                      "reasons"
+                      "entity_id"
                     ],
                     "additionalProperties": {}
                   }
@@ -2347,8 +2586,40 @@
                       "entity_id": {
                         "type": "string"
                       },
+                      "state": {
+                        "description": "Only on a case the model cannot read: it has no chance, no reasons and no Verdict, and it bills nothing. not_scoreable says what is missing or unseen.",
+                        "type": "string",
+                        "const": "not_scoreable"
+                      },
+                      "not_scoreable": {
+                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "type": "object",
+                        "properties": {
+                          "missing_columns": {
+                            "description": "Columns the model reads that this case lacks.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "unseen_values": {
+                            "description": "Per column, the values the model cannot read: a category it never saw, text outside the levels it learned, or a non-number where it reads a number.",
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "additionalProperties": {}
+                      },
                       "p": {
-                        "description": "The chance, 0 to 1. For choice, a map of option to chance.",
+                        "description": "The chance, 0 to 1. For choice, a map of option to chance. Absent on a not_scoreable case.",
                         "anyOf": [
                           {
                             "type": "number"
@@ -2536,9 +2807,7 @@
                       }
                     },
                     "required": [
-                      "entity_id",
-                      "p",
-                      "reasons"
+                      "entity_id"
                     ],
                     "additionalProperties": {}
                   }
@@ -2596,14 +2865,58 @@
                   "const": "unproductive"
                 },
                 "needs": {
+                  "description": "not_yet only: how many more of each the record needs before a model can be checked.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
+                      "description": "How many more labeled rows; 0 when rows are not short.",
                       "anyOf": [
                         {
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "positives": {
+                      "description": "How many more positives (rows where the outcome happened); 0 when positives are not short. have.positives_by_part shows which part of the record is short.",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "countdown": {
+                      "description": "How long until the record holds what needs names, at the record's own pace over its time column (the slower of rows and positives). null without a time column, or when the record gathers none of what is needed. An estimate from the past pace, not a promise.",
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "days",
+                                "weeks",
+                                "months",
+                                "steps"
+                              ]
+                            },
+                            "basis": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "value",
+                            "unit",
+                            "basis"
+                          ],
+                          "additionalProperties": {}
                         },
                         {
                           "type": "null"
@@ -2615,6 +2928,279 @@
                     "labeled_rows"
                   ],
                   "additionalProperties": {}
+                },
+                "have": {
+                  "description": "not_yet only: what the record holds now.",
+                  "type": "object",
+                  "properties": {
+                    "labeled_rows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives_by_part": {
+                      "description": "The positives each part of the record held when it was split to check a model (train, gate, test; in time order when there is a time column). Each part needs 5.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      }
+                    }
+                  },
+                  "required": [
+                    "labeled_rows"
+                  ],
+                  "additionalProperties": {}
+                },
+                "not_scoreable": {
+                  "description": "rank only: cases left out of the ranking because the model cannot read them, each with not_scoreable; the first 100.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "entity_id": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "description": "Only on a case the model cannot read: it has no chance, no reasons and no Verdict, and it bills nothing. not_scoreable says what is missing or unseen.",
+                        "type": "string",
+                        "const": "not_scoreable"
+                      },
+                      "not_scoreable": {
+                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "type": "object",
+                        "properties": {
+                          "missing_columns": {
+                            "description": "Columns the model reads that this case lacks.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "unseen_values": {
+                            "description": "Per column, the values the model cannot read: a category it never saw, text outside the levels it learned, or a non-number where it reads a number.",
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "additionalProperties": {}
+                      },
+                      "p": {
+                        "description": "The chance, 0 to 1. For choice, a map of option to chance. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "level": {
+                        "type": "string"
+                      },
+                      "most_likely": {
+                        "description": "choice only. The option with the highest chance of the outcome.",
+                        "type": "string"
+                      },
+                      "least_likely": {
+                        "description": "choice only. The option with the lowest chance of the outcome.",
+                        "type": "string"
+                      },
+                      "choice": {
+                        "description": "choice only. The best option: most_likely for an outcome you want, least_likely for one you avoid.",
+                        "type": "string"
+                      },
+                      "position": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "reasons": {
+                        "maxItems": 4,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "feature_label": {
+                              "type": "string"
+                            },
+                            "value": {},
+                            "likelihood_direction": {
+                              "type": "string",
+                              "enum": [
+                                "higher",
+                                "lower"
+                              ]
+                            },
+                            "strength": {
+                              "type": "string",
+                              "enum": [
+                                "strong",
+                                "moderate"
+                              ]
+                            },
+                            "association_not_causal": {
+                              "type": "boolean",
+                              "const": true
+                            },
+                            "range": {
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "type": "object",
+                              "properties": {
+                                "at_least": {
+                                  "type": "number"
+                                },
+                                "above": {
+                                  "type": "number"
+                                },
+                                "at_most": {
+                                  "type": "number"
+                                },
+                                "below": {
+                                  "type": "number"
+                                },
+                                "one_of": {
+                                  "type": "array",
+                                  "items": {}
+                                },
+                                "not_one_of": {
+                                  "type": "array",
+                                  "items": {}
+                                },
+                                "one_of_more": {
+                                  "description": "How many more values the group holds than one_of lists (lists stop at 25).",
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "not_one_of_more": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "text": {
+                                  "description": "The same bounds in words, e.g. \"tenure_months 9 to under 17\" (numbers to 6 significant digits).",
+                                  "type": "string"
+                                },
+                                "missing": {
+                                  "type": "boolean",
+                                  "const": true
+                                },
+                                "unseen": {
+                                  "type": "boolean",
+                                  "const": true
+                                }
+                              },
+                              "required": [
+                                "text"
+                              ],
+                              "additionalProperties": {}
+                            }
+                          },
+                          "required": [
+                            "feature_label",
+                            "likelihood_direction",
+                            "strength",
+                            "association_not_causal"
+                          ],
+                          "additionalProperties": {}
+                        }
+                      },
+                      "pattern_match": {
+                        "description": "How many of the answer's pattern conditions this case meets. Absent when the case lacks a column the pattern uses.",
+                        "type": "object",
+                        "properties": {
+                          "matched": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "of": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "met": {
+                            "description": "The feature_label of each pattern condition this case meets.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "matched",
+                          "of",
+                          "met"
+                        ],
+                        "additionalProperties": {}
+                      },
+                      "levers": {
+                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "feature_label": {
+                              "type": "string"
+                            },
+                            "direction": {
+                              "type": "string"
+                            },
+                            "lever_token": {
+                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "feature_label",
+                            "direction"
+                          ],
+                          "additionalProperties": {}
+                        }
+                      },
+                      "refused": {
+                        "type": "boolean"
+                      },
+                      "refused_reason": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "entity_id"
+                    ],
+                    "additionalProperties": {}
+                  }
+                },
+                "not_scoreable_total": {
+                  "description": "rank only: how many cases were left out; ranked_total counts the cases ranked.",
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
                 },
                 "drift": {
                   "type": "object",
@@ -2885,6 +3471,54 @@
             "minimum": -9007199254740991,
             "maximum": 9007199254740991
           },
+          "progress": {
+            "description": "pending only, while the engine is fitting: its stage, how far along, and facts about the record so far (rows, the outcome, rows held out); no chance and no finding.",
+            "type": "object",
+            "properties": {
+              "stage": {
+                "type": "string"
+              },
+              "frac": {
+                "description": "How far along, 0 to 1, across the call's fits.",
+                "type": "number"
+              },
+              "fit": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "of": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "facts_so_far": {
+                "type": "object",
+                "properties": {
+                  "rows": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "training_rows": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "held_out_rows": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "outcome": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": {}
+              }
+            },
+            "additionalProperties": {}
+          },
           "page": {
             "description": "Only when the answer is larger than one MCP response: this response is its first page.",
             "type": "object",
@@ -2965,13 +3599,52 @@
                   ]
                 },
                 "state": {
-                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows; the same call returns the same refusal. not_yet: too few labeled rows; needs.labeled_rows says how many more.",
+                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows; the same call returns the same refusal. not_yet: too few labeled rows or positives (rows where the outcome happened) to check a model; reasons name what is short (too_few_labeled_rows, too_few_positives, no_positives when the outcome's yes values match no row, too_few_to_hold_out when neither count explains it), needs says how many more of each (0 when that one is not short), and have says what the record holds.",
                   "type": "string",
                   "enum": [
                     "answered",
                     "refused",
                     "not_yet"
                   ]
+                },
+                "decision": {
+                  "description": "The state as a decision: actionable when answered, else not_yet or refused. A pure mapping of state, no new number. Per case, band (with band: true) and not_scoreable still apply.",
+                  "type": "string",
+                  "enum": [
+                    "actionable",
+                    "not_yet",
+                    "refused"
+                  ]
+                },
+                "next": {
+                  "description": "The operations that make sense after this answer, each with its cost and what it gives. Data, not instructions.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "description": "A Datagoat operation.",
+                        "type": "string"
+                      },
+                      "with": {
+                        "description": "The input that makes it this step, e.g. model_ref or refit_of.",
+                        "type": "string"
+                      },
+                      "cost": {
+                        "type": "string"
+                      },
+                      "gives": {
+                        "description": "What the operation returns here.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "operation",
+                      "cost",
+                      "gives"
+                    ],
+                    "additionalProperties": {}
+                  }
                 },
                 "cache": {
                   "type": "string",
@@ -3086,8 +3759,40 @@
                       "entity_id": {
                         "type": "string"
                       },
+                      "state": {
+                        "description": "Only on a case the model cannot read: it has no chance, no reasons and no Verdict, and it bills nothing. not_scoreable says what is missing or unseen.",
+                        "type": "string",
+                        "const": "not_scoreable"
+                      },
+                      "not_scoreable": {
+                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "type": "object",
+                        "properties": {
+                          "missing_columns": {
+                            "description": "Columns the model reads that this case lacks.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "unseen_values": {
+                            "description": "Per column, the values the model cannot read: a category it never saw, text outside the levels it learned, or a non-number where it reads a number.",
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "additionalProperties": {}
+                      },
                       "p": {
-                        "description": "The chance, 0 to 1. For choice, a map of option to chance.",
+                        "description": "The chance, 0 to 1. For choice, a map of option to chance. Absent on a not_scoreable case.",
                         "anyOf": [
                           {
                             "type": "number"
@@ -3275,9 +3980,7 @@
                       }
                     },
                     "required": [
-                      "entity_id",
-                      "p",
-                      "reasons"
+                      "entity_id"
                     ],
                     "additionalProperties": {}
                   }
@@ -3290,8 +3993,40 @@
                       "entity_id": {
                         "type": "string"
                       },
+                      "state": {
+                        "description": "Only on a case the model cannot read: it has no chance, no reasons and no Verdict, and it bills nothing. not_scoreable says what is missing or unseen.",
+                        "type": "string",
+                        "const": "not_scoreable"
+                      },
+                      "not_scoreable": {
+                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "type": "object",
+                        "properties": {
+                          "missing_columns": {
+                            "description": "Columns the model reads that this case lacks.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "unseen_values": {
+                            "description": "Per column, the values the model cannot read: a category it never saw, text outside the levels it learned, or a non-number where it reads a number.",
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "additionalProperties": {}
+                      },
                       "p": {
-                        "description": "The chance, 0 to 1. For choice, a map of option to chance.",
+                        "description": "The chance, 0 to 1. For choice, a map of option to chance. Absent on a not_scoreable case.",
                         "anyOf": [
                           {
                             "type": "number"
@@ -3479,9 +4214,7 @@
                       }
                     },
                     "required": [
-                      "entity_id",
-                      "p",
-                      "reasons"
+                      "entity_id"
                     ],
                     "additionalProperties": {}
                   }
@@ -3539,14 +4272,58 @@
                   "const": "unproductive"
                 },
                 "needs": {
+                  "description": "not_yet only: how many more of each the record needs before a model can be checked.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
+                      "description": "How many more labeled rows; 0 when rows are not short.",
                       "anyOf": [
                         {
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "positives": {
+                      "description": "How many more positives (rows where the outcome happened); 0 when positives are not short. have.positives_by_part shows which part of the record is short.",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "countdown": {
+                      "description": "How long until the record holds what needs names, at the record's own pace over its time column (the slower of rows and positives). null without a time column, or when the record gathers none of what is needed. An estimate from the past pace, not a promise.",
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "days",
+                                "weeks",
+                                "months",
+                                "steps"
+                              ]
+                            },
+                            "basis": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "value",
+                            "unit",
+                            "basis"
+                          ],
+                          "additionalProperties": {}
                         },
                         {
                           "type": "null"
@@ -3558,6 +4335,279 @@
                     "labeled_rows"
                   ],
                   "additionalProperties": {}
+                },
+                "have": {
+                  "description": "not_yet only: what the record holds now.",
+                  "type": "object",
+                  "properties": {
+                    "labeled_rows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives_by_part": {
+                      "description": "The positives each part of the record held when it was split to check a model (train, gate, test; in time order when there is a time column). Each part needs 5.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      }
+                    }
+                  },
+                  "required": [
+                    "labeled_rows"
+                  ],
+                  "additionalProperties": {}
+                },
+                "not_scoreable": {
+                  "description": "rank only: cases left out of the ranking because the model cannot read them, each with not_scoreable; the first 100.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "entity_id": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "description": "Only on a case the model cannot read: it has no chance, no reasons and no Verdict, and it bills nothing. not_scoreable says what is missing or unseen.",
+                        "type": "string",
+                        "const": "not_scoreable"
+                      },
+                      "not_scoreable": {
+                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "type": "object",
+                        "properties": {
+                          "missing_columns": {
+                            "description": "Columns the model reads that this case lacks.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "unseen_values": {
+                            "description": "Per column, the values the model cannot read: a category it never saw, text outside the levels it learned, or a non-number where it reads a number.",
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "additionalProperties": {}
+                      },
+                      "p": {
+                        "description": "The chance, 0 to 1. For choice, a map of option to chance. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "level": {
+                        "type": "string"
+                      },
+                      "most_likely": {
+                        "description": "choice only. The option with the highest chance of the outcome.",
+                        "type": "string"
+                      },
+                      "least_likely": {
+                        "description": "choice only. The option with the lowest chance of the outcome.",
+                        "type": "string"
+                      },
+                      "choice": {
+                        "description": "choice only. The best option: most_likely for an outcome you want, least_likely for one you avoid.",
+                        "type": "string"
+                      },
+                      "position": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "reasons": {
+                        "maxItems": 4,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "feature_label": {
+                              "type": "string"
+                            },
+                            "value": {},
+                            "likelihood_direction": {
+                              "type": "string",
+                              "enum": [
+                                "higher",
+                                "lower"
+                              ]
+                            },
+                            "strength": {
+                              "type": "string",
+                              "enum": [
+                                "strong",
+                                "moderate"
+                              ]
+                            },
+                            "association_not_causal": {
+                              "type": "boolean",
+                              "const": true
+                            },
+                            "range": {
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "type": "object",
+                              "properties": {
+                                "at_least": {
+                                  "type": "number"
+                                },
+                                "above": {
+                                  "type": "number"
+                                },
+                                "at_most": {
+                                  "type": "number"
+                                },
+                                "below": {
+                                  "type": "number"
+                                },
+                                "one_of": {
+                                  "type": "array",
+                                  "items": {}
+                                },
+                                "not_one_of": {
+                                  "type": "array",
+                                  "items": {}
+                                },
+                                "one_of_more": {
+                                  "description": "How many more values the group holds than one_of lists (lists stop at 25).",
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "not_one_of_more": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "text": {
+                                  "description": "The same bounds in words, e.g. \"tenure_months 9 to under 17\" (numbers to 6 significant digits).",
+                                  "type": "string"
+                                },
+                                "missing": {
+                                  "type": "boolean",
+                                  "const": true
+                                },
+                                "unseen": {
+                                  "type": "boolean",
+                                  "const": true
+                                }
+                              },
+                              "required": [
+                                "text"
+                              ],
+                              "additionalProperties": {}
+                            }
+                          },
+                          "required": [
+                            "feature_label",
+                            "likelihood_direction",
+                            "strength",
+                            "association_not_causal"
+                          ],
+                          "additionalProperties": {}
+                        }
+                      },
+                      "pattern_match": {
+                        "description": "How many of the answer's pattern conditions this case meets. Absent when the case lacks a column the pattern uses.",
+                        "type": "object",
+                        "properties": {
+                          "matched": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "of": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "met": {
+                            "description": "The feature_label of each pattern condition this case meets.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "matched",
+                          "of",
+                          "met"
+                        ],
+                        "additionalProperties": {}
+                      },
+                      "levers": {
+                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "feature_label": {
+                              "type": "string"
+                            },
+                            "direction": {
+                              "type": "string"
+                            },
+                            "lever_token": {
+                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "feature_label",
+                            "direction"
+                          ],
+                          "additionalProperties": {}
+                        }
+                      },
+                      "refused": {
+                        "type": "boolean"
+                      },
+                      "refused_reason": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "entity_id"
+                    ],
+                    "additionalProperties": {}
+                  }
+                },
+                "not_scoreable_total": {
+                  "description": "rank only: how many cases were left out; ranked_total counts the cases ranked.",
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
                 },
                 "drift": {
                   "type": "object",
@@ -4193,6 +5243,296 @@
         ],
         "additionalProperties": {}
       },
+      "dg_track_record_input": {
+        "type": "object",
+        "properties": {
+          "model_ref": {
+            "type": "string",
+            "pattern": "^mr1_[0-9a-f]{32}$"
+          },
+          "namespace": {
+            "description": "Keeps this call's models apart from the rest of the workspace, e.g. one namespace per customer of your product. A model fitted in a namespace answers only there, and usage is recorded per namespace. Omit for the workspace's own models.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          }
+        },
+        "required": [
+          "model_ref"
+        ],
+        "additionalProperties": false
+      },
+      "dg_track_record_output": {
+        "type": "object",
+        "properties": {
+          "model_ref": {
+            "type": "string"
+          },
+          "answers_kept": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "records_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcomes_without_an_earlier_answer": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "overall": {
+            "type": "object",
+            "properties": {
+              "calls": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "happened": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "observed_rate": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "interval_95": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "mean_chance": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "small_n": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "calls",
+              "happened",
+              "observed_rate",
+              "interval_95",
+              "mean_chance",
+              "small_n"
+            ],
+            "additionalProperties": {}
+          },
+          "by_band": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "band": {
+                  "type": "string"
+                },
+                "calls": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "band",
+                "calls"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "by_level": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "level": {
+                  "type": "string"
+                },
+                "calls": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "level",
+                "calls"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "by_chance": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "range": {
+                  "type": "string"
+                },
+                "calls": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "range",
+                "calls"
+              ],
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "model_ref",
+          "answers_kept",
+          "records_since",
+          "outcomes_without_an_earlier_answer",
+          "overall",
+          "by_band",
+          "by_level",
+          "by_chance"
+        ],
+        "additionalProperties": {}
+      },
+      "dg_profile_input": {
+        "type": "object",
+        "properties": {
+          "namespace": {
+            "description": "Keeps this call's models apart from the rest of the workspace, e.g. one namespace per customer of your product. A model fitted in a namespace answers only there, and usage is recorded per namespace. Omit for the workspace's own models.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          },
+          "words": {
+            "type": "object",
+            "properties": {
+              "case": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "outcome": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "columns": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "exclude": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "display": {
+            "type": "string",
+            "enum": [
+              "chance",
+              "bands"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "dg_profile_output": {
+        "type": "object",
+        "properties": {
+          "namespace": {
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "words": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  },
+                  "exclude": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "display": {
+                    "type": "string",
+                    "enum": [
+                      "chance",
+                      "bands"
+                    ]
+                  },
+                  "hash": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "words",
+                  "exclude",
+                  "display",
+                  "hash"
+                ],
+                "additionalProperties": {}
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "namespace",
+          "profile"
+        ],
+        "additionalProperties": {}
+      },
       "dg_page_input": {
         "type": "object",
         "properties": {
@@ -4233,13 +5573,52 @@
                   ]
                 },
                 "state": {
-                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows; the same call returns the same refusal. not_yet: too few labeled rows; needs.labeled_rows says how many more.",
+                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows; the same call returns the same refusal. not_yet: too few labeled rows or positives (rows where the outcome happened) to check a model; reasons name what is short (too_few_labeled_rows, too_few_positives, no_positives when the outcome's yes values match no row, too_few_to_hold_out when neither count explains it), needs says how many more of each (0 when that one is not short), and have says what the record holds.",
                   "type": "string",
                   "enum": [
                     "answered",
                     "refused",
                     "not_yet"
                   ]
+                },
+                "decision": {
+                  "description": "The state as a decision: actionable when answered, else not_yet or refused. A pure mapping of state, no new number. Per case, band (with band: true) and not_scoreable still apply.",
+                  "type": "string",
+                  "enum": [
+                    "actionable",
+                    "not_yet",
+                    "refused"
+                  ]
+                },
+                "next": {
+                  "description": "The operations that make sense after this answer, each with its cost and what it gives. Data, not instructions.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "description": "A Datagoat operation.",
+                        "type": "string"
+                      },
+                      "with": {
+                        "description": "The input that makes it this step, e.g. model_ref or refit_of.",
+                        "type": "string"
+                      },
+                      "cost": {
+                        "type": "string"
+                      },
+                      "gives": {
+                        "description": "What the operation returns here.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "operation",
+                      "cost",
+                      "gives"
+                    ],
+                    "additionalProperties": {}
+                  }
                 },
                 "cache": {
                   "type": "string",
@@ -4354,8 +5733,40 @@
                       "entity_id": {
                         "type": "string"
                       },
+                      "state": {
+                        "description": "Only on a case the model cannot read: it has no chance, no reasons and no Verdict, and it bills nothing. not_scoreable says what is missing or unseen.",
+                        "type": "string",
+                        "const": "not_scoreable"
+                      },
+                      "not_scoreable": {
+                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "type": "object",
+                        "properties": {
+                          "missing_columns": {
+                            "description": "Columns the model reads that this case lacks.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "unseen_values": {
+                            "description": "Per column, the values the model cannot read: a category it never saw, text outside the levels it learned, or a non-number where it reads a number.",
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "additionalProperties": {}
+                      },
                       "p": {
-                        "description": "The chance, 0 to 1. For choice, a map of option to chance.",
+                        "description": "The chance, 0 to 1. For choice, a map of option to chance. Absent on a not_scoreable case.",
                         "anyOf": [
                           {
                             "type": "number"
@@ -4543,9 +5954,7 @@
                       }
                     },
                     "required": [
-                      "entity_id",
-                      "p",
-                      "reasons"
+                      "entity_id"
                     ],
                     "additionalProperties": {}
                   }
@@ -4558,8 +5967,40 @@
                       "entity_id": {
                         "type": "string"
                       },
+                      "state": {
+                        "description": "Only on a case the model cannot read: it has no chance, no reasons and no Verdict, and it bills nothing. not_scoreable says what is missing or unseen.",
+                        "type": "string",
+                        "const": "not_scoreable"
+                      },
+                      "not_scoreable": {
+                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "type": "object",
+                        "properties": {
+                          "missing_columns": {
+                            "description": "Columns the model reads that this case lacks.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "unseen_values": {
+                            "description": "Per column, the values the model cannot read: a category it never saw, text outside the levels it learned, or a non-number where it reads a number.",
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "additionalProperties": {}
+                      },
                       "p": {
-                        "description": "The chance, 0 to 1. For choice, a map of option to chance.",
+                        "description": "The chance, 0 to 1. For choice, a map of option to chance. Absent on a not_scoreable case.",
                         "anyOf": [
                           {
                             "type": "number"
@@ -4747,9 +6188,7 @@
                       }
                     },
                     "required": [
-                      "entity_id",
-                      "p",
-                      "reasons"
+                      "entity_id"
                     ],
                     "additionalProperties": {}
                   }
@@ -4807,14 +6246,58 @@
                   "const": "unproductive"
                 },
                 "needs": {
+                  "description": "not_yet only: how many more of each the record needs before a model can be checked.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
+                      "description": "How many more labeled rows; 0 when rows are not short.",
                       "anyOf": [
                         {
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "positives": {
+                      "description": "How many more positives (rows where the outcome happened); 0 when positives are not short. have.positives_by_part shows which part of the record is short.",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "countdown": {
+                      "description": "How long until the record holds what needs names, at the record's own pace over its time column (the slower of rows and positives). null without a time column, or when the record gathers none of what is needed. An estimate from the past pace, not a promise.",
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "days",
+                                "weeks",
+                                "months",
+                                "steps"
+                              ]
+                            },
+                            "basis": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "value",
+                            "unit",
+                            "basis"
+                          ],
+                          "additionalProperties": {}
                         },
                         {
                           "type": "null"
@@ -4826,6 +6309,279 @@
                     "labeled_rows"
                   ],
                   "additionalProperties": {}
+                },
+                "have": {
+                  "description": "not_yet only: what the record holds now.",
+                  "type": "object",
+                  "properties": {
+                    "labeled_rows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives_by_part": {
+                      "description": "The positives each part of the record held when it was split to check a model (train, gate, test; in time order when there is a time column). Each part needs 5.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      }
+                    }
+                  },
+                  "required": [
+                    "labeled_rows"
+                  ],
+                  "additionalProperties": {}
+                },
+                "not_scoreable": {
+                  "description": "rank only: cases left out of the ranking because the model cannot read them, each with not_scoreable; the first 100.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "entity_id": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "description": "Only on a case the model cannot read: it has no chance, no reasons and no Verdict, and it bills nothing. not_scoreable says what is missing or unseen.",
+                        "type": "string",
+                        "const": "not_scoreable"
+                      },
+                      "not_scoreable": {
+                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "type": "object",
+                        "properties": {
+                          "missing_columns": {
+                            "description": "Columns the model reads that this case lacks.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "unseen_values": {
+                            "description": "Per column, the values the model cannot read: a category it never saw, text outside the levels it learned, or a non-number where it reads a number.",
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "additionalProperties": {}
+                      },
+                      "p": {
+                        "description": "The chance, 0 to 1. For choice, a map of option to chance. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "level": {
+                        "type": "string"
+                      },
+                      "most_likely": {
+                        "description": "choice only. The option with the highest chance of the outcome.",
+                        "type": "string"
+                      },
+                      "least_likely": {
+                        "description": "choice only. The option with the lowest chance of the outcome.",
+                        "type": "string"
+                      },
+                      "choice": {
+                        "description": "choice only. The best option: most_likely for an outcome you want, least_likely for one you avoid.",
+                        "type": "string"
+                      },
+                      "position": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "reasons": {
+                        "maxItems": 4,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "feature_label": {
+                              "type": "string"
+                            },
+                            "value": {},
+                            "likelihood_direction": {
+                              "type": "string",
+                              "enum": [
+                                "higher",
+                                "lower"
+                              ]
+                            },
+                            "strength": {
+                              "type": "string",
+                              "enum": [
+                                "strong",
+                                "moderate"
+                              ]
+                            },
+                            "association_not_causal": {
+                              "type": "boolean",
+                              "const": true
+                            },
+                            "range": {
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "type": "object",
+                              "properties": {
+                                "at_least": {
+                                  "type": "number"
+                                },
+                                "above": {
+                                  "type": "number"
+                                },
+                                "at_most": {
+                                  "type": "number"
+                                },
+                                "below": {
+                                  "type": "number"
+                                },
+                                "one_of": {
+                                  "type": "array",
+                                  "items": {}
+                                },
+                                "not_one_of": {
+                                  "type": "array",
+                                  "items": {}
+                                },
+                                "one_of_more": {
+                                  "description": "How many more values the group holds than one_of lists (lists stop at 25).",
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "not_one_of_more": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "text": {
+                                  "description": "The same bounds in words, e.g. \"tenure_months 9 to under 17\" (numbers to 6 significant digits).",
+                                  "type": "string"
+                                },
+                                "missing": {
+                                  "type": "boolean",
+                                  "const": true
+                                },
+                                "unseen": {
+                                  "type": "boolean",
+                                  "const": true
+                                }
+                              },
+                              "required": [
+                                "text"
+                              ],
+                              "additionalProperties": {}
+                            }
+                          },
+                          "required": [
+                            "feature_label",
+                            "likelihood_direction",
+                            "strength",
+                            "association_not_causal"
+                          ],
+                          "additionalProperties": {}
+                        }
+                      },
+                      "pattern_match": {
+                        "description": "How many of the answer's pattern conditions this case meets. Absent when the case lacks a column the pattern uses.",
+                        "type": "object",
+                        "properties": {
+                          "matched": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "of": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "met": {
+                            "description": "The feature_label of each pattern condition this case meets.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "matched",
+                          "of",
+                          "met"
+                        ],
+                        "additionalProperties": {}
+                      },
+                      "levers": {
+                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "feature_label": {
+                              "type": "string"
+                            },
+                            "direction": {
+                              "type": "string"
+                            },
+                            "lever_token": {
+                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "feature_label",
+                            "direction"
+                          ],
+                          "additionalProperties": {}
+                        }
+                      },
+                      "refused": {
+                        "type": "boolean"
+                      },
+                      "refused_reason": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "entity_id"
+                    ],
+                    "additionalProperties": {}
+                  }
+                },
+                "not_scoreable_total": {
+                  "description": "rank only: how many cases were left out; ranked_total counts the cases ranked.",
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
                 },
                 "drift": {
                   "type": "object",

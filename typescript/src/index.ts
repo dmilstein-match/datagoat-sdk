@@ -308,6 +308,12 @@ export class Datagoat {
   attest(a: { model_ref: string; entity_id: string; lever_token: string; post_value: number | string | boolean | null; acted_at: string; event_id?: string; namespace?: string }) { return this.call("attest", a); }
   /** Did acting work? Outcomes of cases acted on vs not, once each group has 30 with an outcome. */
   evidence(model_ref: string, o: { namespace?: string } = {}) { return this.call("evidence", { model_ref, ...stated(o) }); }
+  /** How the model's earlier calls held up against the outcomes reported for them. */
+  trackRecord(model_ref: string, o: { namespace?: string } = {}) { return this.call("track-record", { model_ref, ...stated(o) }); }
+  /** A namespace's profile: with words, exclude or display it replaces it; without, it reads it. */
+  profile(o: { namespace?: string; words?: { case?: string; outcome?: string; columns?: Record<string, string> }; exclude?: string[]; display?: "chance" | "bands" } = {}) {
+    return this.call("profile", stated(o));
+  }
   /** valid | invalid_signature | expired | unknown_key. Sends no key. */
   async verify(verdict: Record<string, unknown>, signature: Record<string, unknown> | null): Promise<string> {
     if (!signature) return "invalid_signature";

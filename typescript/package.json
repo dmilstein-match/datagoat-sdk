@@ -1,6 +1,6 @@
 {
   "name": "@datagoat/sdk",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Ask yesno, score, choice and rank questions about cases, answered from what happened to cases like them. Deterministic, with reasons and signed Verdicts.",
   "type": "module",
   "main": "dist/index.js",
