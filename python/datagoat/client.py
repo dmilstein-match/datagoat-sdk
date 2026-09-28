@@ -37,20 +37,89 @@ class Problem:
     remedy: str
     field: Optional[str] = None
     request_id: Optional[str] = None
+    #: The code's entry on https://datagoat.io/docs/errors.
+    doc_url: Optional[str] = None
+    #: invalid_outcomes: every bad row, as {index, field, detail}.
+    errors: Optional[List[Dict[str, Any]]] = None
 
 
 class DatagoatError(Exception):
-    """A problem the API answered with. Read `problem.code` and `problem.remedy`."""
+    """A problem the API answered with. Read `problem.code` and `problem.remedy`.
+
+    Each family has its own subclass, so `except` can tell them apart: ValidationError (the
+    request is wrong: `field` names what to fix), NotFoundError (and ModelUnavailableError for a
+    model_ref that no longer answers), RateLimitError, PaymentRequiredError. A refusal is never an
+    exception: it is an answer with state "refused"."""
 
     def __init__(self, p: Problem) -> None:
         super().__init__(f"{p.code}: {p.detail} ({p.remedy})")
         self.problem = p
         #: Seconds the API asked to wait before retrying (a 429 names it), else None.
         self.retry_after_s: Optional[float] = None
+        #: report_outcomes over several chunks: rows of the list already sent and written before
+        #: the chunk that failed (0 when the first chunk failed).
+        self.written_before: int = 0
 
     @property
     def retryable(self) -> bool:
         return self.problem.status in (429, 502, 503, 504)
+
+    @property
+    def code(self) -> str:
+        return self.problem.code
+
+
+class ValidationError(DatagoatError):
+    """400/422: the request is wrong. `field` names the argument; for invalid_outcomes, `errors`
+    lists every bad row as {index, field, detail}."""
+
+    @property
+    def field(self) -> Optional[str]:
+        return self.problem.field
+
+    @property
+    def errors(self) -> List[Dict[str, Any]]:
+        return list(self.problem.errors or [])
+
+
+class NotFoundError(DatagoatError):
+    """404/410: what the call names does not exist here, or no longer does (`gone` for 410)."""
+
+    @property
+    def gone(self) -> bool:
+        return self.problem.status == 410
+
+
+class ModelUnavailableError(NotFoundError):
+    """A model_ref that does not answer: model_deleted or model_expired (410), model_ref_missing
+    (404). Asking again with the record fits a new model."""
+
+
+class RateLimitError(DatagoatError):
+    """429: the workspace's requests for this minute are spent; `retry_after_s` says how long."""
+
+
+class PaymentRequiredError(DatagoatError):
+    """402: asking about your own data needs a card on file (payment_required, payment_past_due,
+    subscription_canceled). The samples stay free."""
+
+
+MODEL_CODES = frozenset({"model_deleted", "model_expired", "model_ref_missing"})
+
+
+def error_for(p: Problem) -> DatagoatError:
+    """The typed error for a problem, by its code family."""
+    if p.code in MODEL_CODES:
+        return ModelUnavailableError(p)
+    if p.status in (404, 410):
+        return NotFoundError(p)
+    if p.status in (400, 422):
+        return ValidationError(p)
+    if p.status == 429:
+        return RateLimitError(p)
+    if p.status == 402:
+        return PaymentRequiredError(p)
+    return DatagoatError(p)
 
 
 def _json_default(o: Any) -> Any:
@@ -173,9 +242,10 @@ class Client:
                 p = json.load(e)
             except Exception:  # noqa: BLE001
                 p = {}
-            err = DatagoatError(Problem(e.code, p.get("code", "http_error"), p.get("detail", str(e.reason)),
-                                        p.get("remedy", "see https://datagoat.io/docs"), p.get("field"),
-                                        p.get("request_id") or e.headers.get("x-request-id")))
+            err = error_for(Problem(e.code, p.get("code", "http_error"), p.get("detail", str(e.reason)),
+                                    p.get("remedy", "see https://datagoat.io/docs"), p.get("field"),
+                                    p.get("request_id") or e.headers.get("x-request-id"),
+                                    p.get("doc_url"), p.get("errors") if isinstance(p.get("errors"), list) else None))
             err.retry_after_s = _retry_after(e.headers.get("retry-after"), p.get("retry_after_ms"))
             raise err from None
 
@@ -225,7 +295,7 @@ class Client:
             acknowledge_decision_support: bool = False, idempotency_key: Optional[str] = None,
             export: Optional[str] = None, model_ttl_days: Optional[int] = None,
             group_column: Optional[str] = None, namespace: Optional[str] = None,
-            wait: bool = True, timeout_s: Optional[float] = None,
+            response_format: Optional[str] = None, wait: bool = True, timeout_s: Optional[float] = None,
             on_progress: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
         """Ask typed questions about cases, answered from a record of past outcomes.
 
@@ -242,6 +312,12 @@ class Client:
         long a model this call fits keeps answering, and questions built with `from_model` answer
         from an existing model with no fit (then the record is optional when cases are rows).
         `group_column` names the case each row belongs to when a table has several rows per case.
+
+        `response_format="concise"` leaves each answer's Verdicts out of the response
+        (`verdicts_withheld`); `download(out["page"]["answer_url"])` returns the whole answer.
+
+        A first fit on a large record answers pending; `ask` polls it to the end. Sending the ask
+        again instead of polling would start (and bill) a second fit.
         """
         if not questions:
             raise ValueError("ask needs at least one question")
@@ -270,6 +346,10 @@ class Client:
             if export != "csv":
                 raise ValueError('export is "csv"')
             body["export"] = export
+        if response_format is not None:
+            if response_format not in ("full", "concise"):
+                raise ValueError('response_format is "full" or "concise"')
+            body["response_format"] = response_format
         for k, v in (("model_ttl_days", model_ttl_days), ("group_column", group_column), ("namespace", namespace)):
             if v is not None:
                 body[k] = v
@@ -396,23 +476,70 @@ class Client:
                 p = json.load(e)
             except Exception:  # noqa: BLE001
                 p = {}
-            raise DatagoatError(Problem(e.code, p.get("code", "http_error"), p.get("detail", str(e.reason)),
-                                        p.get("remedy", "ask again for a new link"))) from None
+            raise error_for(Problem(e.code, p.get("code", "http_error"), p.get("detail", str(e.reason)),
+                                    p.get("remedy", "ask again for a new link"), doc_url=p.get("doc_url"))) from None
 
     def preflight(self, dataset_id: str, *, outcome_column: Optional[str] = None,
-                  predictors: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+                  predictors: Optional[Sequence[str]] = None, entity_column: Optional[str] = None) -> Dict[str, Any]:
+        """Is the table worth asking about? Free; fits nothing. `entity_column` is reported as an
+        identifier and never counted as a usable predictor."""
         body: Dict[str, Any] = {"dataset_id": dataset_id}
         if outcome_column:
             body["outcome_column"] = outcome_column
+        if entity_column:
+            body["entity_column"] = entity_column
         if predictors:
             body["predictors"] = list(predictors)
         return self._call("preflight", body)
 
     def report_outcomes(self, model_ref: str, outcomes: Sequence[Mapping[str, Any]], *,
-                        namespace: Optional[str] = None) -> Dict[str, Any]:
-        """Record what really happened: [{entity_id, outcome, observed_at, event_id?}]."""
-        return self._call("report-outcomes", {"model_ref": model_ref, "outcomes": [dict(o) for o in outcomes],
-                                              **_ns(namespace)})
+                        namespace: Optional[str] = None, partial: Optional[bool] = None,
+                        chunk_size: int = 10_000) -> Dict[str, Any]:
+        """Record what really happened: [{entity_id, outcome, observed_at, event_id?}].
+
+        Up to 10,000 rows (the API's most per call) go in ONE call, written whole or not at all:
+        a bad row writes nothing and raises ValidationError (code invalid_outcomes) whose `errors`
+        give every bad row's index. A longer list is sent in chunks of `chunk_size`; each chunk is
+        atomic, but chunks before a failing one stay written. Any error from a later chunk
+        (validation, rate limit, server, network) says so: `problem.detail` names the rows already
+        written, `written_before` counts them, and `errors` index rows in `outcomes` as given.
+        Resending the list is safe when every row has an event_id. With `partial=True` the valid
+        rows are written and `results` lists every row by its index: written, duplicate, or error
+        with field and detail."""
+        rows = [dict(o) for o in outcomes]
+        if not rows:
+            raise ValueError("no outcomes")
+        if not 1 <= chunk_size <= 10_000:
+            raise ValueError("chunk_size is 1 to 10,000")
+        total: Dict[str, Any] = {"written": 0, "duplicates": 0}
+        results: List[Dict[str, Any]] = []
+        for start in range(0, len(rows), chunk_size):
+            body: Dict[str, Any] = {"model_ref": model_ref, "outcomes": rows[start:start + chunk_size], **_ns(namespace)}
+            if partial is not None:
+                body["partial"] = bool(partial)
+            try:
+                out = self._call("report-outcomes", body)
+            except DatagoatError as e:
+                if not start:
+                    raise
+                # A later chunk failed: rows 0..start-1 were written. Same class, indices in the
+                # whole list, and the rows already written named.
+                errs = e.problem.errors
+                shifted = [{**x, "index": x["index"] + start} if isinstance(x.get("index"), int) else x for x in errs] if errs is not None else None
+                err = type(e)(Problem(e.problem.status, e.problem.code,
+                                      f"{e.problem.detail} (rows 0 to {start - 1} were already sent and written: "
+                                      f"{total['written']} written, {total['duplicates']} duplicate; rows {start} onward were not)",
+                                      e.problem.remedy, e.problem.field, e.problem.request_id, e.problem.doc_url, shifted))
+                err.retry_after_s = e.retry_after_s
+                err.written_before = start
+                raise err from None
+            total["written"] += int(out.get("written") or 0)
+            total["duplicates"] += int(out.get("duplicates") or 0)
+            for r in out.get("results") or []:
+                results.append({**r, "index": r["index"] + start} if isinstance(r.get("index"), int) else r)
+        if partial:
+            total["results"] = results
+        return total
 
     def attest(self, model_ref: str, entity_id: str, lever_token: str, post_value: Any, acted_at: str,
                event_id: Optional[str] = None, *, namespace: Optional[str] = None) -> Dict[str, Any]:
@@ -434,14 +561,18 @@ class Client:
         return self._call("track-record", {"model_ref": model_ref, **_ns(namespace)})
 
     def profile(self, namespace: Optional[str] = None, *, words: Optional[Mapping[str, Any]] = None,
-                exclude: Optional[Sequence[str]] = None, display: Optional[str] = None) -> Dict[str, Any]:
-        """A namespace's profile. With words, exclude or display it replaces the profile; without,
-        it returns the current one (or profile None)."""
+                exclude: Optional[Sequence[str]] = None, display: Optional[str] = None,
+                fixed: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+        """A namespace's profile. With words, exclude, fixed or display it replaces the profile;
+        without, it returns the current one (or profile None). `fixed`: columns an action never
+        changes (tenure, age): still read by the model, and no lever is offered on them."""
         body: Dict[str, Any] = {**_ns(namespace)}
         if words is not None:
             body["words"] = dict(words)
         if exclude is not None:
             body["exclude"] = list(exclude)
+        if fixed is not None:
+            body["fixed"] = list(fixed)
         if display is not None:
             body["display"] = display
         return self._call("profile", body)

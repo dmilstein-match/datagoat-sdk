@@ -452,3 +452,103 @@ def test_building_a_product_model_refs_namespaces_and_lifetimes():
     with pytest.raises(ValueError):
         dg.ask({"churn": yesno("churned")}, entity_column="customer_id", subject_kind="org")
     srv.shutdown()
+
+
+def test_problems_are_typed_by_family_and_a_refusal_is_never_one():
+    from datagoat import ModelUnavailableError, NotFoundError, PaymentRequiredError, RateLimitError, ValidationError
+
+    def prob(code, status, **kw):
+        return ({"type": f"https://datagoat.io/problems/{code}", "title": code, "status": status, "detail": "d",
+                 "code": code, "remedy": "r", "doc_url": f"https://datagoat.io/docs/errors#{code}", **kw}, status)
+
+    cases = [
+        (prob("invalid_request", 422, field="questions.q.cuts"), ValidationError),
+        (prob("model_deleted", 410, field="model_ref"), ModelUnavailableError),
+        (prob("model_expired", 410, field="model_ref"), ModelUnavailableError),
+        (prob("model_ref_missing", 404, field="model_ref"), ModelUnavailableError),
+        (prob("unknown_dataset", 404), NotFoundError),
+        (prob("payment_required", 402), PaymentRequiredError),
+    ]
+    srv, url = serve([c[0] for c in cases])
+    dg = Client(api_key="dgk_live_x", base_url=url, max_retries=0)
+    for (body, _), cls in cases:
+        with pytest.raises(cls) as e:
+            dg.drift("mr1_x")
+        assert isinstance(e.value, DatagoatError) and e.value.code == body["code"]
+        assert e.value.problem.doc_url == body["doc_url"]
+    srv.shutdown()
+    srv, url = serve([prob("invalid_request", 422, field="questions.q.cuts")])
+    with pytest.raises(ValidationError) as e:
+        Client(api_key="dgk_live_x", base_url=url).drift("mr1_x")
+    assert e.value.field == "questions.q.cuts" and isinstance(e.value, DatagoatError)
+    srv.shutdown()
+    srv, url = serve([prob("rate_limited", 429, retry_after_ms=0)])
+    with pytest.raises(RateLimitError):
+        Client(api_key="dgk_live_x", base_url=url, max_retries=0).drift("mr1_x")
+    srv.shutdown()
+    refused = {"status": "done", "answers": {"q": {"type": "yesno", "state": "refused", "reasons": ["too_few_predictors"],
+                                                  "needs": {"columns": 2}, "have": {"columns": 2}}}}
+    srv, url = serve([refused])
+    out = Client(api_key="dgk_live_x", base_url=url).ask({"q": yesno("y")}, dataset_id="ds_x", entity_column="a",
+                                                         subject_kind="org", cases={"ids": ["1"]})
+    assert out["answers"]["q"]["state"] == "refused", "a refusal is an answer, not an exception"
+    srv.shutdown()
+
+
+def test_report_outcomes_sends_chunks_and_surfaces_every_bad_row_by_its_index_in_the_whole_list():
+    from datagoat import ValidationError
+    rows = [{"entity_id": f"c{i}", "outcome": 1, "observed_at": "2026-10-01"} for i in range(5)]
+    bad = ({"code": "invalid_outcomes", "status": 422, "detail": "1 invalid", "remedy": "fix", "field": "outcomes",
+            "errors": [{"index": 1, "field": "outcome", "detail": "not yes/no"}]}, 422)
+    srv, url = serve([{"written": 2, "duplicates": 0}, bad])
+    with pytest.raises(ValidationError) as e:
+        Client(api_key="dgk_live_x", base_url=url).report_outcomes("mr1_x", rows, chunk_size=2)
+    assert [len(b["outcomes"]) for p, b, _ in SEEN] == [2, 2]
+    assert e.value.errors == [{"index": 3, "field": "outcome", "detail": "not yes/no"}], "index in the whole list"
+    assert "rows 0 to 1 were already sent and written: 2 written" in e.value.problem.detail
+    assert e.value.written_before == 2
+    assert all("partial" not in b for _, b, _ in SEEN), "partial is sent only when stated"
+    srv.shutdown()
+    SEEN.clear()
+    part = lambda n: {"written": n, "duplicates": 0, "results": [{"index": i, "status": "written"} for i in range(n)]}
+    srv, url = serve([part(2), part(2), part(1)])
+    out = Client(api_key="dgk_live_x", base_url=url).report_outcomes("mr1_x", rows, chunk_size=2, partial=True)
+    assert out["written"] == 5 and [r["index"] for r in out["results"]] == [0, 1, 2, 3, 4]
+    assert all(b["partial"] is True for _, b, _ in SEEN)
+    srv.shutdown()
+
+
+def test_the_new_fields_are_sent_only_when_stated():
+    srv, url = serve([DONE, {"ok": True}, {"ok": True}, {"ok": True}])
+    dg = Client(api_key="dgk_live_x", base_url=url)
+    dg.ask({"churn": yesno("churned")}, dataset_id="ds_x", entity_column="customer_id", subject_kind="org",
+           cases={"ids": ["c1"]}, response_format="concise")
+    assert SEEN[-1][1]["response_format"] == "concise"
+    dg.preflight("ds_x", entity_column="customer_id")
+    assert SEEN[-1][1] == {"dataset_id": "ds_x", "entity_column": "customer_id"}
+    dg.profile("acme", fixed=["tenure_months"])
+    assert SEEN[-1][1] == {"namespace": "acme", "fixed": ["tenure_months"]}
+    dg.profile("acme")
+    assert SEEN[-1][1] == {"namespace": "acme"}
+    with pytest.raises(ValueError):
+        dg.ask({"churn": yesno("churned")}, dataset_id="ds_x", entity_column="c", subject_kind="org",
+               cases={"ids": ["c1"]}, response_format="short")
+    srv.shutdown()
+
+
+def test_report_outcomes_defaults_to_one_atomic_call_and_any_later_chunk_failure_names_what_was_written():
+    from datagoat import DatagoatError, RateLimitError
+    rows = [{"entity_id": f"c{i}", "outcome": 1, "observed_at": "2026-10-01"} for i in range(5)]
+    srv, url = serve([{"written": 5, "duplicates": 0}])
+    Client(api_key="dgk_live_x", base_url=url).report_outcomes("mr1_x", rows)
+    assert [len(b["outcomes"]) for _, b, _ in SEEN] == [5], "up to 10,000 rows go in one atomic call"
+    srv.shutdown()
+    SEEN.clear()
+    for failure, cls in (((({"code": "engine_unavailable", "status": 503, "detail": "down", "remedy": "retry"}), 503), DatagoatError),
+                         (({"code": "rate_limited", "status": 429, "detail": "busy", "remedy": "wait", "retry_after_ms": 0}, 429), RateLimitError)):
+        srv, url = serve([{"written": 3, "duplicates": 1}, failure])
+        with pytest.raises(cls) as e:
+            Client(api_key="dgk_live_x", base_url=url, max_retries=0).report_outcomes("mr1_x", rows, chunk_size=4)
+        assert e.value.written_before == 4
+        assert "rows 0 to 3 were already sent and written: 3 written, 1 duplicate; rows 4 onward were not" in e.value.problem.detail
+        srv.shutdown()

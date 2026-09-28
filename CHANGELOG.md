@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.8.0
+
+- Contract 1.7.0. Typed errors under `DatagoatError`, one per code family: `ValidationError`
+  (`field`; `errors` for `invalid_outcomes`), `NotFoundError` (`gone` on 410) and its
+  `ModelUnavailableError` (`model_deleted`, `model_expired`, `model_ref_missing`),
+  `RateLimitError`, `PaymentRequiredError`. Every problem carries `doc_url`. A refusal is still an
+  answer, never an exception.
+- `report_outcomes` / `reportOutcomes`: up to 10,000 rows is one atomic call; a longer list goes in
+  chunks, a bad row is reported by its index in the whole list, and any error from a later chunk
+  names the rows already written (`written_before` / `writtenBefore`). `partial=True` writes the valid rows and returns
+  every row's result.
+- New parameters: `response_format` ("concise" leaves Verdicts out; `page.answer_url` has them),
+  `preflight(entity_column=...)`, `profile(fixed=[...])`.
+- Answers may carry `too_few_predictors` refusals (`needs.columns`), per-case `unknown_id`, missing
+  ranges, `excluded_columns`, and levers with their own token and `to_one_of`.
+
 ## 1.7.0
 
 - Contract 1.6.0. `track_record` / `trackRecord` (how a model's calls held up against reported

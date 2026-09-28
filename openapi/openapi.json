@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Datagoat API",
-    "version": "1.6.0",
-    "description": "Ask yes/no, score, choice and rank questions about cases. Datagoat answers from what happened to cases like them: deterministic, with reasons, signed, and it refuses rather than guess. MCP: https://api.datagoat.io/mcp",
+    "version": "1.7.0",
+    "description": "Ask yes/no, score, choice and rank questions about cases. Datagoat answers from what happened to cases like them: deterministic, with reasons, signed, and it refuses rather than guess. MCP: https://api.datagoat.io/mcp\n\n## Which journey\n\nFive journeys organise the operations: each operation is tagged with the journeys that use it, https://api.datagoat.io/journeys.arazzo.yaml has each journey as an Arazzo 1.1.0 workflow, and `describe` lists them with ready-to-run calls.\n\n| Journey | Fits when the user… | Not when… | First call |\n|---|---|---|---|\n| [Try it](https://datagoat.io/docs/quickstart) | has no data yet, or wants to see an answer and a refusal before using their own | they already have a table of past cases (Ask your data) | `dg_describe`, then `dg_ask` (a sample's ready-to-run ask) |\n| [Ask your data](https://datagoat.io/docs/ask-your-data) | has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it | they will score cases every day for their own customers (Ship a product) | `dg_add_dataset` (upload: true for a file a person holds), then `dg_suggest` |\n| [Ship a product](https://datagoat.io/docs/build) | will score many customers' cases repeatedly, on a schedule, inside their own product | it is a one-off question about one table (Ask your data) | `dg_ask` (with namespace and model_ttl_days), then `dg_ask` (by model_ref, no fit) |\n| [Run it](https://datagoat.io/docs/run) | already has a model_ref in use and is learning what happened to the cases it scored | no model has been fitted yet (Ask your data) | `dg_report_outcomes`, then `dg_drift` |\n| [Prove it](https://datagoat.io/docs/prove) | must show someone the calls were right, or measure whether acting on them worked | they only need the answer (Ask your data) | `dg_verify`, then `dg_track_record` (or dg_evidence, whether acting on the calls worked) |",
     "contact": {
       "url": "https://datagoat.io"
     }
@@ -20,12 +20,43 @@
   ],
   "tags": [
     {
-      "name": "ask",
-      "description": "The one call."
+      "name": "Try it",
+      "description": "Fits when the user has no data yet, or wants to see an answer and a refusal before using their own. Not when they already have a table of past cases.",
+      "externalDocs": {
+        "url": "https://datagoat.io/docs/quickstart"
+      }
     },
     {
-      "name": "supporting",
-      "description": "Data, tasks, outcomes, drift, verification."
+      "name": "Ask your data",
+      "description": "Fits when the user has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it. Not when they will score cases every day for their own customers.",
+      "externalDocs": {
+        "url": "https://datagoat.io/docs/ask-your-data"
+      }
+    },
+    {
+      "name": "Ship a product",
+      "description": "Fits when the user will score many customers' cases repeatedly, on a schedule, inside their own product. Not when it is a one-off question about one table.",
+      "externalDocs": {
+        "url": "https://datagoat.io/docs/build"
+      }
+    },
+    {
+      "name": "Run it",
+      "description": "Fits when the user already has a model_ref in use and is learning what happened to the cases it scored. Not when no model has been fitted yet.",
+      "externalDocs": {
+        "url": "https://datagoat.io/docs/run"
+      }
+    },
+    {
+      "name": "Prove it",
+      "description": "Fits when the user must show someone the calls were right, or measure whether acting on them worked. Not when they only need the answer.",
+      "externalDocs": {
+        "url": "https://datagoat.io/docs/prove"
+      }
+    },
+    {
+      "name": "Other",
+      "description": "Operations outside the five journeys' main path."
     }
   ],
   "paths": {
@@ -33,9 +64,11 @@
       "post": {
         "operationId": "dg_ask",
         "summary": "Ask",
-        "description": "Answers typed questions about cases from a record of past outcomes. A call sends the record (data), questions keyed by id, and the cases to answer; answers return keyed by the same ids. Question types: yesno (the chance the outcome happens), score (that chance as a level: unlikely, possible, likely, very_likely), choice (the best option for each case, with each option's chance, most_likely and least_likely; choice is the only type that needs outcome_is_desirable), rank (cases in order of the chance). Questions about one record can share one call, and questions on the same outcome and outcome_is_desirable share one fit. The record can be a table (one row per case) or, with shape, an event log, a time series, a panel, sensor signals, agent traces, or snapshots (an event log read as of each moment in a snapshot table, e.g. a deal at each stage). Building a product: namespace keeps each of your customers' models and usage apart; model_ttl_days (1 to 365) sets how long a fitted model answers; a question that names model_ref instead of outcome_column scores new cases from that model with no fit (send cases.rows, or a newer record and cases.ids), and every answer lists model_columns, the columns its model reads. Each answer has a state: answered; refused (the record holds no pattern that holds on held-out rows, and the same call returns the same refusal); or not_yet (too few labeled rows or positives; needs gives how many more of each, and reasons name what is short). A case the model cannot read (a column it reads is absent, or a value it never saw) comes back as state not_scoreable, naming them, with no chance; it bills nothing. An answered question carries, per case, p and up to four reasons (feature_label, value, likelihood_direction, strength, and range: the band of values the case's value fell in, e.g. \"tenure_months 9 to under 17\"), and a signed Verdict covering its cases. yesno, score and rank answers also carry pattern: the conditions, with cut points, under which the outcome is most common (e.g. \"support_tickets over 3\"), and per case pattern_match {matched, of, met}. Reasons and patterns are associations, not causes; likelihood_direction is the direction the chance moved, not whether that is good news. Answers are deterministic: the same record and question give the same answer. A first fit on a large record returns status pending with a task_id for dg_poll. Over MCP, an answer larger than one tool result (about 60,000 characters, roughly 60 cases with their Verdict) returns its first page: each list carries page {offset, returned, total}, page.next_cursor leads to the rest through dg_page, and page.answer_url downloads the whole answer as JSON. export: csv adds a CSV download of every case. Free to try on the samples, e.g. data.dataset_id sample:saas_churn, entity_column customer_id, outcome_column churned, cases {ids: [\"cust_0001\"]}. Cost: one decision per answered case, and a fit the first time a record is asked about or when a question names refit_of (1,000 free fits a month, then $0.01 each); refusals and not_yet bill no decisions, and the samples are free",
+        "description": "For a question about cases from a record of past outcomes (a table, a log, a series), or scoring new cases from an existing model_ref; the questions worth trying on an unfamiliar table come from dg_suggest instead. Answers typed questions about cases from a record of past outcomes. A call sends the record (data), questions keyed by id, and the cases to answer; answers return keyed by the same ids. Question types: yesno (the chance the outcome happens), score (that chance as a level: unlikely, possible, likely, very_likely), choice (the best option for each case, with each option's chance, most_likely and least_likely; choice is the only type that needs outcome_is_desirable), rank (cases in order of the chance). Questions about one record can share one call, and questions on the same outcome and outcome_is_desirable share one fit. The record can be a table (one row per case) or, with shape, an event log, a time series, a panel, sensor signals, agent traces, or snapshots (an event log read as of each moment in a snapshot table, e.g. a deal at each stage). Building a product: namespace keeps each of your customers' models and usage apart; model_ttl_days (1 to 365) sets how long a fitted model answers; a question that names model_ref instead of outcome_column scores new cases from that model with no fit (send cases.rows, or a newer record and cases.ids), and every answer lists model_columns, the columns its model reads. Each answer has a state: answered; refused (the record holds no pattern that holds on held-out rows, and the same call returns the same refusal); or not_yet (too few labeled rows or positives; needs gives how many more of each, and reasons name what is short). A case the model cannot read (a column it reads is absent, or a value it never saw) comes back as state not_scoreable, naming them, with no chance; it bills nothing. An answered question carries, per case, p and up to four reasons (feature_label, value, likelihood_direction, strength, and range: the band of values the case's value fell in, e.g. \"tenure_months 9 to under 17\"), and a signed Verdict covering its cases. yesno, score and rank answers also carry pattern: the conditions, with cut points, under which the outcome is most common (e.g. \"support_tickets over 3\"), and per case pattern_match {matched, of, met}. Reasons and patterns are associations, not causes; likelihood_direction is the direction the chance moved, not whether that is good news. Answers are deterministic: the same record and question give the same answer. A first fit on a large record returns status pending with a task_id for dg_poll. Over MCP, an answer larger than one tool result (about 60,000 characters, roughly 60 cases with their Verdict) returns its first page: each list carries page {offset, returned, total}, page.next_cursor leads to the rest through dg_page, and page.answer_url downloads the whole answer as JSON. export: csv adds a CSV download of every case. response_format concise leaves the Verdicts out of the response (verdicts_withheld says how many); they stay in the full answer at page.answer_url, and states, chances and reasons are the same. Free to try on the samples, e.g. data.dataset_id sample:saas_churn, entity_column customer_id, outcome_column churned, cases {ids: [\"cust_0001\"]}. Cost: one decision per answered case, and a fit the first time a record is asked about or when a question names refit_of (1,000 free fits a month, then $0.01 each); refusals and not_yet bill no decisions, and the samples are free",
         "tags": [
-          "ask"
+          "Try it",
+          "Ask your data",
+          "Ship a product"
         ],
         "x-dg-cost": "one decision per answered case; the first ask on a record, or a question with refit_of, also runs a fit",
         "requestBody": {
@@ -104,9 +137,9 @@
       "post": {
         "operationId": "dg_add_dataset",
         "summary": "Add a dataset",
-        "description": "Stores a record (any shape) so later asks can name it by dataset_id. Free. Takes rows or csv (up to 10,000 rows or 3,000,000 characters, and 4.5 MB, per call), a fetch_url to download (up to 50 MB), or upload: true for large files: it returns upload_page, a link a person opens in a browser to drop in a CSV of up to 250 MB (valid one hour), and upload_url, a presigned URL a program PUTs the file to. Calling again with the returned dataset_id and more rows appends a piece; pieces append in order until the first ask or preflight seals the dataset, and a piece with different columns is refused. Returns dataset_id, status (ready | open | awaiting_upload), rows and columns. A stored dataset is deleted 24 hours after it was last used, or at once with dg_delete_dataset",
+        "description": "For a record asked about more than once, or too large to send inline; a one-off ask can carry its record inline (data.rows, data.csv or data.fetch_url on dg_ask) instead. Stores a record (any shape) so later asks can name it by dataset_id. Free. Takes rows or csv (up to 10,000 rows or 3,000,000 characters, and 4.5 MB, per call), a fetch_url to download (up to 50 MB), or upload: true for large files: it returns upload_page, a link a person opens in a browser to drop in a CSV of up to 250 MB (valid one hour), and upload_url, a presigned URL a program PUTs the file to. Calling again with the returned dataset_id and more rows appends a piece; pieces append in order until the first ask or preflight seals the dataset, and a piece with different columns is refused. Returns dataset_id, status (ready | open | awaiting_upload), rows and columns. A stored dataset is deleted 24 hours after it was last used, or at once with dg_delete_dataset",
         "tags": [
-          "supporting"
+          "Ask your data"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -165,9 +198,9 @@
       "post": {
         "operationId": "dg_poll",
         "summary": "Poll a task",
-        "description": "Free. Returns the current status of a pending task (a first ask on a large record): status pending (with stage and elapsed_ms) until it finishes, then the same object the original call would have returned, paged the same way over MCP. retry_after_ms is the suggested wait between polls. Re-sending the original call instead would start a second fit. Results are kept for 24 hours",
+        "description": "For an ask that came back with status pending and a task_id; the later pages of a finished answer come from dg_page instead. Free. Returns the current status of a pending task (a first ask on a large record): status pending (with stage and elapsed_ms) until it finishes, then the same object the original call would have returned, paged the same way over MCP. retry_after_ms is the suggested wait between polls. Re-sending the original call instead would start a second fit. Results are kept for 24 hours",
         "tags": [
-          "supporting"
+          "Ask your data"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -236,9 +269,9 @@
       "post": {
         "operationId": "dg_preflight",
         "summary": "Check a table before asking",
-        "description": "Free; fits nothing. Reports whether a table is worth asking about before the first ask: grain (whether one row is one kind of thing), resolutions (what each column's values are; an ambiguous column is not a sound predictor), and fitness (positives per usable predictor over labeled rows). blocking entries mean an answer from this table would not be believable; advisory entries are worth reading. It reports and refuses nothing, and a clean preflight does not promise a pattern exists. Like an ask, it seals a dataset still taking pieces. Tables only",
+        "description": "For checking one table before its first ask; the list of questions a table could be asked comes from dg_suggest instead. Free; fits nothing. Reports whether a table is worth asking about before the first ask: grain (whether one row is one kind of thing), resolutions (what each column's values are; an ambiguous column is not a sound predictor), and fitness (positives per usable predictor over labeled rows). blocking entries mean an answer from this table would not be believable; advisory entries are worth reading. It reports and refuses nothing, and a clean preflight does not promise a pattern exists. Like an ask, it seals a dataset still taking pieces. Tables only",
         "tags": [
-          "supporting"
+          "Ask your data"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -297,9 +330,10 @@
       "post": {
         "operationId": "dg_report_outcomes",
         "summary": "Report what happened",
-        "description": "Free. Records the real outcome for cases answered under a model_ref: outcome is yes/no (0/1, true/false), observed_at is when it was observed, event_id is the caller's idempotency key. Outcomes are evidence about the model's track record; they do not change a model or an answer. Needs the write:outcomes capability: a person signed in through an MCP host has it; an API key has it when created with \"Can report outcomes\"",
+        "description": "For outcomes that arrived for cases a model_ref answered; an action taken on a case is recorded with dg_attest instead. Free. Records the real outcome for cases answered under a model_ref: outcome is yes/no (0/1, true/false), observed_at is when it was observed, event_id is the caller's idempotency key. Outcomes are evidence about the model's track record; they do not change a model or an answer. A batch is all or nothing: one bad row writes nothing, and the invalid_outcomes problem lists every bad row by index; with partial: true the valid rows are written and results reports each row. Needs the write:outcomes capability: a person signed in through an MCP host has it; an API key has it when created with \"Can report outcomes\"",
         "tags": [
-          "supporting"
+          "Run it",
+          "Prove it"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -358,9 +392,9 @@
       "post": {
         "operationId": "dg_drift",
         "summary": "Has the pattern moved?",
-        "description": "Free. For a model_ref from an ask that named refit_of, compares the new fit with the old: pattern is unchanged | changed | no_prior, and recommendation is keep | refit | abandon | no_check_yet (nothing has been compared yet, so it is no reason to renew a model). The chain is built by asking again on the new version of a record with refit_of set to the previous model_ref. A single refusal on a refresh is not drift",
+        "description": "For deciding whether a refitted model is kept, replaced or abandoned; how a model's calls fared against reported outcomes is dg_track_record instead. Free. For a model_ref from an ask that named refit_of, compares the new fit with the old: pattern is unchanged | changed | no_prior, and recommendation is keep | refit | abandon | no_check_yet (nothing has been compared yet, so it is no reason to renew a model). The chain is built by asking again on the new version of a record with refit_of set to the previous model_ref. A single refusal on a refresh is not drift",
         "tags": [
-          "supporting"
+          "Run it"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -419,9 +453,10 @@
       "post": {
         "operationId": "dg_verify",
         "summary": "Verify a Verdict",
-        "description": "Free, and needs no key over REST. Checks that a Verdict is genuine and unaltered. Takes the verdict and signature exactly as received (re-serialising them breaks the signature). Returns status: valid | invalid_signature | expired | unknown_key. An expired Verdict is stale and its question can be asked again. Public keys: https://api.datagoat.io/.well-known/jwks.json",
+        "description": "For checking a Verdict before anyone relies on it; the SDKs' verify_offline checks the same signature with no call to Datagoat. Free, and needs no key over REST. Checks that a Verdict is genuine and unaltered. Takes the verdict and signature exactly as received (re-serialising them breaks the signature). Returns status: valid | invalid_signature | expired | unknown_key. An expired Verdict is stale and its question can be asked again. Public keys: https://api.datagoat.io/.well-known/jwks.json",
         "tags": [
-          "supporting"
+          "Try it",
+          "Prove it"
         ],
         "x-dg-cost": "free",
         "security": [],
@@ -481,9 +516,9 @@
       "post": {
         "operationId": "dg_describe",
         "summary": "What Datagoat can do",
-        "description": "Free. Lists the five journeys (try it, ask your data, ship a product, run it, prove it) with their docs, skills and operations; the question types, record shapes, answer states, limits, prices, retention, the documentation pages, and the free sample records, each with a ready-to-run ask",
+        "description": "For a first contact, or a caller with no data yet: the five journeys, each with when it fits and its first call, and start, the journey for this caller; answering a question is dg_ask instead. Free. Lists the five journeys (try it, ask your data, ship a product, run it, prove it) with their docs, skills and operations; the question types, record shapes, answer states, limits, prices, retention, the documentation pages, and the free sample records, each with a ready-to-run ask",
         "tags": [
-          "supporting"
+          "Try it"
         ],
         "x-dg-cost": "free",
         "security": [],
@@ -543,9 +578,9 @@
       "post": {
         "operationId": "dg_delete_dataset",
         "summary": "Delete a dataset",
-        "description": "Free. Deletes a stored dataset now: its rows are removed from storage and its dataset_id stops working. Fitted models hold no rows and are not affected. Without this call a dataset is deleted 24 hours after it was last used",
+        "description": "For removing a stored record now rather than 24 hours after its last use; a fitted model is removed with dg_delete_model instead. Free. Deletes a stored dataset now: its rows are removed from storage and its dataset_id stops working. Fitted models hold no rows and are not affected. Without this call a dataset is deleted 24 hours after it was last used",
         "tags": [
-          "supporting"
+          "Other"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -604,9 +639,9 @@
       "post": {
         "operationId": "dg_attest",
         "summary": "Record an action",
-        "description": "Free. Records that a case was acted on through one of its levers, so dg_evidence can compare cases acted on with cases not acted on. Takes the model_ref of the answer, the case's entity_id, the lever_token from that case's levers, the feature's new value after the action (post_value) and when the action happened (acted_at). The engine checks the new value against the lever's target without revealing the target, and returns compliant, dose_fraction (how far toward the target the case moved, 0 to 1) and evaluated_feature (the feature the token checks; a lever with several changes carries one token, for one of them). Only compliant actions count as acted. Idempotent by event_id. Needs the write:outcomes capability: a person signed in through an MCP host has it; an API key has it when created with \"Can report outcomes\"",
+        "description": "For recording that a case was acted on through one of its levers; what then happened to the case is dg_report_outcomes instead. Free. Records that a case was acted on through one of its levers, so dg_evidence can compare cases acted on with cases not acted on. Takes the model_ref of the answer, the case's entity_id, the lever_token from that case's levers, the feature's new value after the action (post_value) and when the action happened (acted_at). The engine checks the new value against the lever's target without revealing the target, and returns compliant, dose_fraction (how far toward the target the case moved, 0 to 1) and evaluated_feature (the feature the token checks). Each lever is one feature with its own lever_token; a lever on a category column carries to_one_of, the values that count as acting on it. Only compliant actions count as acted; a non-compliant one leaves the case in neither group. Idempotent by event_id. Needs the write:outcomes capability: a person signed in through an MCP host has it; an API key has it when created with \"Can report outcomes\"",
         "tags": [
-          "supporting"
+          "Prove it"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -665,9 +700,9 @@
       "post": {
         "operationId": "dg_evidence",
         "summary": "Did acting work?",
-        "description": "Free. For a model_ref, compares the reported outcomes of cases that were acted on (a compliant dg_attest) with cases that were not. live is null until each group has 30 cases with a reported outcome; then it gives n_acted, n_not_acted, rate_acted, rate_not_acted, diff and its confidence interval (ci_low, ci_high), with small_n true below 100 per group. progress always counts cases with an outcome, acted and not acted, so the gap to the floor is visible. The comparison is observational: acted cases were chosen, not randomised",
+        "description": "For measuring whether acting on the answers changed outcomes; whether the calls themselves were right is dg_track_record instead. Free. For a model_ref, compares the reported outcomes of cases that were acted on (a compliant dg_attest) with cases that were not. live is null until each group has 30 cases with a reported outcome; then it gives n_acted, n_not_acted, rate_acted, rate_not_acted, diff and its confidence interval (ci_low, ci_high), with small_n true below 100 per group. progress always counts cases with an outcome, acted and not acted, so the gap to the floor is visible. The comparison is observational: acted cases were chosen, not randomised",
         "tags": [
-          "supporting"
+          "Prove it"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -726,9 +761,9 @@
       "post": {
         "operationId": "dg_track_record",
         "summary": "How the model's calls held up",
-        "description": "Free. For a model_ref, sets what the model said about each case against what then happened (the outcomes sent with dg_report_outcomes). Each outcome is paired with the latest answer about that case given on or before the day it was observed; an outcome with no earlier answer is counted in outcomes_without_an_earlier_answer, not paired. overall, and each entry of by_band, by_level and by_chance, give calls, happened, observed_rate, its 95% interval (interval_95) and mean_chance, the average chance the model gave: a calibrated model's observed_rate sits near its mean_chance. A case reported more than once counts once, with its latest outcome. small_n is true below 100 calls. Kept: yesno and score answers, and the top_k cases of a rank (so a rank's by_chance leans high); choice answers are not kept. Answers are kept from records_since on",
+        "description": "For showing whether a model's calls were right; whether acting on them worked is dg_evidence instead. Free. For a model_ref, sets what the model said about each case against what then happened (the outcomes sent with dg_report_outcomes). Each outcome is paired with the latest answer about that case given on or before the day it was observed; an outcome with no earlier answer is counted in outcomes_without_an_earlier_answer, not paired. overall, and each entry of by_band, by_level and by_chance, give calls, happened, observed_rate, its 95% interval (interval_95) and mean_chance, the average chance the model gave: a calibrated model's observed_rate sits near its mean_chance. A case reported more than once counts once, with its latest outcome. small_n is true below 100 calls. Kept: yesno and score answers, and the top_k cases of a rank (so a rank's by_chance leans high); choice answers are not kept. Answers are kept from records_since on",
         "tags": [
-          "supporting"
+          "Prove it"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -787,9 +822,9 @@
       "post": {
         "operationId": "dg_profile",
         "summary": "A namespace's profile",
-        "description": "Free. The profile of a namespace (one of your customers): the words its answers use, columns never used, and what its end users see. Sent with words, exclude or display, it replaces the whole profile (a field left out is reset); sent with only namespace (or nothing, for the workspace itself), it returns the current one. words: case (what a case is called, e.g. customer), outcome (the outcome in plain words, e.g. cancels), columns (a phrase per column, e.g. {\"tenure_months\": \"months as a customer\"}). exclude: columns of a table record that no fit in this namespace uses (a new fit, so a new model_ref); the columns that frame a question (outcome, entity, time, group) and columns the record lacks are left out of it, and a shaped record or a model_ref question is not affected (the answer's profile.exclusions_applied says whether they were used). display: chance (default) or bands; with bands, the sentence each case carries names its band, and the answer says display bands, a signal for an end-user surface to show bands only (the API still returns every chance). Each answer in the namespace then carries profile {hash, display, exclusions_applied} and, per case, says: one sentence built from these words and the engine's own values, verbatim. Each Verdict names the profile's hash.",
+        "description": "For the words, excluded columns, fixed columns (no lever offered) and display of one namespace (one of a builder's customers), set once; the answers themselves come from dg_ask. Free. The profile of a namespace (one of your customers): the words its answers use, columns never used, columns no lever touches, and what its end users see. Sent with words, exclude, fixed or display, it replaces the whole profile (a field left out is reset); sent with only namespace (or nothing, for the workspace itself), it returns the current one. words: case (what a case is called, e.g. customer), outcome (the outcome in plain words, e.g. cancels), columns (a phrase per column, e.g. {\"tenure_months\": \"months as a customer\"}). exclude: columns of a table record that no fit in this namespace uses (a new fit, so a new model_ref); the columns that frame a question (outcome, entity, time, group) and columns the record lacks are left out of it, and a shaped record or a model_ref question is not affected (the answer's profile.exclusions_applied says whether they were used). fixed: columns an action never changes (tenure, age, a signup date); the model still reads them, no lever is offered on them, and answers list them in excluded_columns with why fixed_by_caller. display: chance (default) or bands; with bands, the sentence each case carries names its band, and the answer says display bands, a signal for an end-user surface to show bands only (the API still returns every chance). Each answer in the namespace then carries profile {hash, display, exclusions_applied} and, per case, says: one sentence built from these words and the engine's own values, verbatim. Each Verdict names the profile's hash.",
         "tags": [
-          "supporting"
+          "Ship a product"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -848,9 +883,9 @@
       "post": {
         "operationId": "dg_page",
         "summary": "Next page of an answer",
-        "description": "Free. Returns the next page of an answer that was too large for one response, from page.next_cursor. Each answer in the page keeps its type, state and model_ref, and its list (cases, or ranked for rank) carries page {offset, returned, total}. Pages are slices of the stored answer in its original order; the last page has no next_cursor. Cursors last as long as the answer: 24 hours",
+        "description": "For the rest of an answer that came back paged over MCP (page.next_cursor); an ask still running is dg_poll instead, and the whole answer at once is page.answer_url. Free. Returns the next page of an answer that was too large for one response, from page.next_cursor. Each answer in the page keeps its type, state and model_ref, and its list (cases, or ranked for rank) carries page {offset, returned, total}. Pages are slices of the stored answer in its original order; the last page has no next_cursor. Cursors last as long as the answer: 24 hours",
         "tags": [
-          "supporting"
+          "Ask your data"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -909,9 +944,9 @@
       "post": {
         "operationId": "dg_suggest",
         "summary": "Which questions are worth trying on this table?",
-        "description": "Free; fits nothing. Lists the yes/no questions a table could be asked, worth trying first, and says for each whether it is worth asking. Candidates are the table's two-valued columns (converted, churned, lapsed), plus, with include_categories, each value of a column with 3 to 8 values (plan = pro). Each candidate carries outcome_column, positive_values, the share of rows that are yes (prevalence), worth_asking (the engine's quick check that the record holds enough distinct patterns to try; it runs no fit), defined_by (columns that on their own almost completely determine the outcome, so the question restates the data rather than predicts it) and a ready-to-send question. worth_asking is a screen, not an answer: measured on 267 candidate questions across 15 records, it passed 60 of the 65 that dg_ask answered, and about half of the questions it passes are answered. Tables only; entity_column and time_column are never candidates",
+        "description": "For an unfamiliar table: the yes/no questions worth trying on it; asking one is dg_ask, and checking a question already chosen is dg_preflight. Free; fits nothing. Lists the yes/no questions a table could be asked, worth trying first, and says for each whether it is worth asking. Candidates are the table's two-valued columns (converted, churned, lapsed), plus, with include_categories, each value of a column with 3 to 8 values (plan = pro). Each candidate carries outcome_column, positive_values, the share of rows that are yes (prevalence), worth_asking (the engine's quick check that the record holds enough distinct patterns to try; it runs no fit), defined_by (columns that on their own almost completely determine the outcome, so the question restates the data rather than predicts it) and a ready-to-send question. worth_asking is a screen, not an answer: measured on 267 candidate questions across 15 records, it passed 60 of the 65 that dg_ask answered, and about half of the questions it passes are answered. Tables only; entity_column and time_column are never candidates",
         "tags": [
-          "supporting"
+          "Ask your data"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -970,9 +1005,10 @@
       "post": {
         "operationId": "dg_extend_model",
         "summary": "Keep a model longer",
-        "description": "Free. Sets a model to expire the given number of days from now (1 to 365), so it keeps answering model_ref questions without a new fit. An expired model cannot be renewed. Returns model_ref and model_expires_at. A model holds cut points and the category values it groups, never rows",
+        "description": "For keeping a model answering past its model_expires_at, typically after dg_drift says keep; a model no longer wanted is removed with dg_delete_model instead. Free. Sets a model to expire the given number of days from now (1 to 365), so it keeps answering model_ref questions without a new fit. An expired model cannot be renewed. Returns model_ref and model_expires_at. A model holds cut points and the category values it groups, never rows",
         "tags": [
-          "supporting"
+          "Ship a product",
+          "Run it"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -1031,9 +1067,10 @@
       "post": {
         "operationId": "dg_delete_model",
         "summary": "Delete a model",
-        "description": "Free. Deletes a model now: its model_ref stops answering, and outcome reports, attestations and evidence for it stop too; its Verdicts can still be verified. Asking about the same record again fits (and counts) a new model. Deleting again returns the same result. Without this call a model stops answering when it expires. Needs the write:outcomes capability (a person signed in through an MCP host has it; an API key has it when created with \"Can report outcomes\")",
+        "description": "For retiring a model now (dg_drift said abandon, or a customer left); a stored record is removed with dg_delete_dataset instead. Free. Deletes a model now: its model_ref stops answering, and outcome reports, attestations and evidence for it stop too; its Verdicts can still be verified. Asking about the same record again fits (and counts) a new model. Deleting again returns the same result. Without this call a model stops answering when it expires. Needs the write:outcomes capability (a person signed in through an MCP host has it; an API key has it when created with \"Can report outcomes\")",
         "tags": [
-          "supporting"
+          "Ship a product",
+          "Run it"
         ],
         "x-dg-cost": "free",
         "requestBody": {
@@ -1200,7 +1237,7 @@
     "schemas": {
       "Problem": {
         "type": "object",
-        "description": "RFC 9457 problem. Read `code` and `remedy`; `field` names the argument at fault.",
+        "description": "RFC 9457 problem. `code` and `remedy` say what went wrong and what changes the outcome; `field` names the argument at fault; `doc_url` is the code's entry on https://datagoat.io/docs/errors.",
         "properties": {
           "type": {
             "type": "string"
@@ -1225,6 +1262,36 @@
           },
           "request_id": {
             "type": "string"
+          },
+          "doc_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "https://datagoat.io/docs/errors#<code>"
+          },
+          "errors": {
+            "type": "array",
+            "description": "invalid_outcomes only: every bad field of the batch, one entry each (a row with two bad fields appears twice), in the caller's field names.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "index"
+              ]
+            }
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "description": "rate_limited only: how long to wait before retrying."
           }
         },
         "required": [
@@ -1233,7 +1300,8 @@
           "status",
           "detail",
           "code",
-          "remedy"
+          "remedy",
+          "doc_url"
         ]
       },
       "dg_ask_input": {
@@ -1914,6 +1982,14 @@
             "type": "string",
             "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
           },
+          "response_format": {
+            "description": "full (default): every answer with its signed Verdicts. concise: the same answers without verdicts; each answer says verdicts_withheld {count}, and the whole answer, Verdicts included, stays at page.answer_url for 24 hours. States, chances and reasons are the same either way. A pending ask polled with dg_poll returns the full answer.",
+            "type": "string",
+            "enum": [
+              "full",
+              "concise"
+            ]
+          },
           "idempotency_key": {
             "description": "A retry with the same key returns the first call's answer without fitting or billing again (keys are kept 24 hours).",
             "type": "string",
@@ -2192,13 +2268,8 @@
                   ]
                 },
                 "state": {
-                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows; the same call returns the same refusal. not_yet: too few labeled rows or positives (rows where the outcome happened) to check a model; reasons name what is short (too_few_labeled_rows, too_few_positives, no_positives when the outcome's yes values match no row, too_few_to_hold_out when neither count explains it), needs says how many more of each (0 when that one is not short), and have says what the record holds.",
-                  "type": "string",
-                  "enum": [
-                    "answered",
-                    "refused",
-                    "not_yet"
-                  ]
+                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows (reasons no_finding_cleared), or it has too few usable predictor columns to search (reasons too_few_predictors, with needs.columns and have.columns); the same call returns the same refusal. not_yet: too few labeled rows or positives (rows where the outcome happened) to check a model; reasons name what is short (too_few_labeled_rows, too_few_positives, no_positives when the outcome's yes values match no row, too_few_to_hold_out when neither count explains it), needs says how many more of each (0 when that one is not short), and have says what the record holds.",
+                  "type": "string"
                 },
                 "decision": {
                   "description": "The state as a decision: actionable when answered, else not_yet or refused. A pure mapping of state, no new number. Per case, band (with band: true) and not_scoreable still apply.",
@@ -2240,11 +2311,8 @@
                   }
                 },
                 "cache": {
-                  "type": "string",
-                  "enum": [
-                    "hit",
-                    "miss"
-                  ]
+                  "description": "Known values: hit, miss; others may be added.",
+                  "type": "string"
                 },
                 "model_ref": {
                   "type": "string"
@@ -2331,10 +2399,14 @@
                         "description": "The same bounds in words, e.g. \"tenure_months 9 to under 17\" (numbers to 6 significant digits).",
                         "type": "string"
                       },
-                      "missing_matches": {
-                        "description": "A blank value counts as meeting this condition.",
+                      "missing": {
+                        "description": "The condition is a blank value alone (text says \"… is missing\").",
                         "type": "boolean",
                         "const": true
+                      },
+                      "missing_matches": {
+                        "description": "true: a blank value counts as meeting this condition, and text says so (e.g. \"region is west or is missing\").",
+                        "type": "boolean"
                       }
                     },
                     "required": [
@@ -2358,7 +2430,7 @@
                         "const": "not_scoreable"
                       },
                       "not_scoreable": {
-                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "description": "What the model cannot read in this case. A null, blank or whitespace value is not listed: it is scored the way the record's own blanks were, and so is a column absent from a cases.rows row when the record had blanks in that column.",
                         "type": "object",
                         "properties": {
                           "missing_columns": {
@@ -2380,6 +2452,11 @@
                                 "type": "string"
                               }
                             }
+                          },
+                          "unknown_id": {
+                            "description": "cases.ids only: the record holds no case with this id. The ids it does hold are answered in the same call; an unknown id bills nothing.",
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "additionalProperties": {}
@@ -2430,27 +2507,23 @@
                             "feature_label": {
                               "type": "string"
                             },
-                            "value": {},
+                            "value": {
+                              "description": "The case's value in this column; null when it is missing (blank, whitespace or null, read the way the record's own blanks were)."
+                            },
                             "likelihood_direction": {
-                              "type": "string",
-                              "enum": [
-                                "higher",
-                                "lower"
-                              ]
+                              "description": "Known values: higher, lower; others may be added.",
+                              "type": "string"
                             },
                             "strength": {
-                              "type": "string",
-                              "enum": [
-                                "strong",
-                                "moderate"
-                              ]
+                              "description": "Known values: strong, moderate; others may be added.",
+                              "type": "string"
                             },
                             "association_not_causal": {
                               "type": "boolean",
                               "const": true
                             },
                             "range": {
-                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank, and text says so (e.g. \"region is missing\"). unseen: a category the model never saw.",
                               "type": "object",
                               "properties": {
                                 "at_least": {
@@ -2542,7 +2615,7 @@
                         "additionalProperties": {}
                       },
                       "levers": {
-                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "description": "Changes that would move this case's chance, when the engine found any: one lever per feature, each with its own lever_token. None is offered on a column the namespace's profile lists as fixed. Associations, not causes.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -2554,7 +2627,16 @@
                               "type": "string"
                             },
                             "lever_token": {
-                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "description": "Opaque, and this lever's own: dg_attest takes it to record an action on this lever's feature.",
+                              "type": "string"
+                            },
+                            "to_one_of": {
+                              "description": "A lever on a category column: the values that count as acting on it (the compliant set).",
+                              "type": "array",
+                              "items": {}
+                            },
+                            "lever_advisory": {
+                              "description": "time_like: the column measures time (tenure, age, *_days, *_months, days_since_*), which an action rarely changes; a profile's fixed lists such columns so no lever is offered on them.",
                               "type": "string"
                             }
                           },
@@ -2592,7 +2674,7 @@
                         "const": "not_scoreable"
                       },
                       "not_scoreable": {
-                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "description": "What the model cannot read in this case. A null, blank or whitespace value is not listed: it is scored the way the record's own blanks were, and so is a column absent from a cases.rows row when the record had blanks in that column.",
                         "type": "object",
                         "properties": {
                           "missing_columns": {
@@ -2614,6 +2696,11 @@
                                 "type": "string"
                               }
                             }
+                          },
+                          "unknown_id": {
+                            "description": "cases.ids only: the record holds no case with this id. The ids it does hold are answered in the same call; an unknown id bills nothing.",
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "additionalProperties": {}
@@ -2664,27 +2751,23 @@
                             "feature_label": {
                               "type": "string"
                             },
-                            "value": {},
+                            "value": {
+                              "description": "The case's value in this column; null when it is missing (blank, whitespace or null, read the way the record's own blanks were)."
+                            },
                             "likelihood_direction": {
-                              "type": "string",
-                              "enum": [
-                                "higher",
-                                "lower"
-                              ]
+                              "description": "Known values: higher, lower; others may be added.",
+                              "type": "string"
                             },
                             "strength": {
-                              "type": "string",
-                              "enum": [
-                                "strong",
-                                "moderate"
-                              ]
+                              "description": "Known values: strong, moderate; others may be added.",
+                              "type": "string"
                             },
                             "association_not_causal": {
                               "type": "boolean",
                               "const": true
                             },
                             "range": {
-                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank, and text says so (e.g. \"region is missing\"). unseen: a category the model never saw.",
                               "type": "object",
                               "properties": {
                                 "at_least": {
@@ -2776,7 +2859,7 @@
                         "additionalProperties": {}
                       },
                       "levers": {
-                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "description": "Changes that would move this case's chance, when the engine found any: one lever per feature, each with its own lever_token. None is offered on a column the namespace's profile lists as fixed. Associations, not causes.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -2788,7 +2871,16 @@
                               "type": "string"
                             },
                             "lever_token": {
-                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "description": "Opaque, and this lever's own: dg_attest takes it to record an action on this lever's feature.",
+                              "type": "string"
+                            },
+                            "to_one_of": {
+                              "description": "A lever on a category column: the values that count as acting on it (the compliant set).",
+                              "type": "array",
+                              "items": {}
+                            },
+                            "lever_advisory": {
+                              "description": "time_like: the column measures time (tenure, age, *_days, *_months, days_since_*), which an action rarely changes; a profile's fixed lists such columns so no lever is offered on them.",
                               "type": "string"
                             }
                           },
@@ -2865,11 +2957,11 @@
                   "const": "unproductive"
                 },
                 "needs": {
-                  "description": "not_yet only: how many more of each the record needs before a model can be checked.",
+                  "description": "not_yet: how many more of each the record needs before a model can be checked. A too_few_predictors refusal: how many more usable columns.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
-                      "description": "How many more labeled rows; 0 when rows are not short.",
+                      "description": "not_yet: how many more labeled rows; 0 when rows are not short.",
                       "anyOf": [
                         {
                           "type": "integer",
@@ -2881,6 +2973,12 @@
                         }
                       ]
                     },
+                    "columns": {
+                      "description": "too_few_predictors: how many more usable predictor columns the record needs (a usable column varies, is not the outcome, an identifier or a time key, and does not restate the outcome).",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
                     "positives": {
                       "description": "How many more positives (rows where the outcome happened); 0 when positives are not short. have.positives_by_part shows which part of the record is short.",
                       "type": "integer",
@@ -2888,7 +2986,7 @@
                       "maximum": 9007199254740991
                     },
                     "countdown": {
-                      "description": "How long until the record holds what needs names, at the record's own pace over its time column (the slower of rows and positives). null without a time column, or when the record gathers none of what is needed. An estimate from the past pace, not a promise.",
+                      "description": "How long until the record holds what needs names (the slower of rows and positives): rows at the record's own pace over its time column, positives at the pace of its recent part, where they are short. null without a time column, or when the record (for positives, its recent part) gathers none of what is needed. An estimate from the past pace, not a promise.",
                       "anyOf": [
                         {
                           "type": "object",
@@ -2899,13 +2997,8 @@
                               "maximum": 9007199254740991
                             },
                             "unit": {
-                              "type": "string",
-                              "enum": [
-                                "days",
-                                "weeks",
-                                "months",
-                                "steps"
-                              ]
+                              "description": "Known values: days, weeks, months, steps; others may be added.",
+                              "type": "string"
                             },
                             "basis": {
                               "type": "string"
@@ -2924,16 +3017,19 @@
                       ]
                     }
                   },
-                  "required": [
-                    "labeled_rows"
-                  ],
                   "additionalProperties": {}
                 },
                 "have": {
-                  "description": "not_yet only: what the record holds now.",
+                  "description": "not_yet, or a too_few_predictors refusal: what the record holds now.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "columns": {
+                      "description": "too_few_predictors: the usable predictor columns the record holds.",
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
@@ -2956,10 +3052,32 @@
                       }
                     }
                   },
-                  "required": [
-                    "labeled_rows"
-                  ],
                   "additionalProperties": {}
+                },
+                "excluded_columns": {
+                  "description": "Columns of the record the model does not use as predictors, and why: restates_outcome (on its own it almost determines the outcome), identifier, time_key, excluded_by_caller (the profile's exclude), unusable (detail: all_missing, constant or too_sparse). fixed_by_caller (the profile's fixed) is still read by the model, and no lever is offered on it.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "column": {
+                        "type": "string"
+                      },
+                      "why": {
+                        "description": "Known values: restates_outcome, identifier, time_key, excluded_by_caller, fixed_by_caller, unusable; others may be added.",
+                        "type": "string"
+                      },
+                      "detail": {
+                        "description": "unusable only: all_missing, constant or too_sparse.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "column",
+                      "why"
+                    ],
+                    "additionalProperties": {}
+                  }
                 },
                 "not_scoreable": {
                   "description": "rank only: cases left out of the ranking because the model cannot read them, each with not_scoreable; the first 100.",
@@ -2976,7 +3094,7 @@
                         "const": "not_scoreable"
                       },
                       "not_scoreable": {
-                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "description": "What the model cannot read in this case. A null, blank or whitespace value is not listed: it is scored the way the record's own blanks were, and so is a column absent from a cases.rows row when the record had blanks in that column.",
                         "type": "object",
                         "properties": {
                           "missing_columns": {
@@ -2998,6 +3116,11 @@
                                 "type": "string"
                               }
                             }
+                          },
+                          "unknown_id": {
+                            "description": "cases.ids only: the record holds no case with this id. The ids it does hold are answered in the same call; an unknown id bills nothing.",
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "additionalProperties": {}
@@ -3048,27 +3171,23 @@
                             "feature_label": {
                               "type": "string"
                             },
-                            "value": {},
+                            "value": {
+                              "description": "The case's value in this column; null when it is missing (blank, whitespace or null, read the way the record's own blanks were)."
+                            },
                             "likelihood_direction": {
-                              "type": "string",
-                              "enum": [
-                                "higher",
-                                "lower"
-                              ]
+                              "description": "Known values: higher, lower; others may be added.",
+                              "type": "string"
                             },
                             "strength": {
-                              "type": "string",
-                              "enum": [
-                                "strong",
-                                "moderate"
-                              ]
+                              "description": "Known values: strong, moderate; others may be added.",
+                              "type": "string"
                             },
                             "association_not_causal": {
                               "type": "boolean",
                               "const": true
                             },
                             "range": {
-                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank, and text says so (e.g. \"region is missing\"). unseen: a category the model never saw.",
                               "type": "object",
                               "properties": {
                                 "at_least": {
@@ -3160,7 +3279,7 @@
                         "additionalProperties": {}
                       },
                       "levers": {
-                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "description": "Changes that would move this case's chance, when the engine found any: one lever per feature, each with its own lever_token. None is offered on a column the namespace's profile lists as fixed. Associations, not causes.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -3172,7 +3291,16 @@
                               "type": "string"
                             },
                             "lever_token": {
-                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "description": "Opaque, and this lever's own: dg_attest takes it to record an action on this lever's feature.",
+                              "type": "string"
+                            },
+                            "to_one_of": {
+                              "description": "A lever on a category column: the values that count as acting on it (the compliant set).",
+                              "type": "array",
+                              "items": {}
+                            },
+                            "lever_advisory": {
+                              "description": "time_like: the column measures time (tenure, age, *_days, *_months, days_since_*), which an action rarely changes; a profile's fixed lists such columns so no lever is offered on them.",
                               "type": "string"
                             }
                           },
@@ -3237,7 +3365,7 @@
                   "additionalProperties": {}
                 },
                 "verdicts_withheld": {
-                  "description": "Only on a paged answer whose Verdicts are too large to share a page with the cases: they are unchanged in the full answer at page.answer_url.",
+                  "description": "On a paged answer whose Verdicts are too large to share a page with the cases (reason too_large_for_one_response), or on an ask with response_format concise (reason response_format_concise): the Verdicts are unchanged in the full answer at page.answer_url.",
                   "type": "object",
                   "properties": {
                     "count": {
@@ -3599,13 +3727,8 @@
                   ]
                 },
                 "state": {
-                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows; the same call returns the same refusal. not_yet: too few labeled rows or positives (rows where the outcome happened) to check a model; reasons name what is short (too_few_labeled_rows, too_few_positives, no_positives when the outcome's yes values match no row, too_few_to_hold_out when neither count explains it), needs says how many more of each (0 when that one is not short), and have says what the record holds.",
-                  "type": "string",
-                  "enum": [
-                    "answered",
-                    "refused",
-                    "not_yet"
-                  ]
+                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows (reasons no_finding_cleared), or it has too few usable predictor columns to search (reasons too_few_predictors, with needs.columns and have.columns); the same call returns the same refusal. not_yet: too few labeled rows or positives (rows where the outcome happened) to check a model; reasons name what is short (too_few_labeled_rows, too_few_positives, no_positives when the outcome's yes values match no row, too_few_to_hold_out when neither count explains it), needs says how many more of each (0 when that one is not short), and have says what the record holds.",
+                  "type": "string"
                 },
                 "decision": {
                   "description": "The state as a decision: actionable when answered, else not_yet or refused. A pure mapping of state, no new number. Per case, band (with band: true) and not_scoreable still apply.",
@@ -3647,11 +3770,8 @@
                   }
                 },
                 "cache": {
-                  "type": "string",
-                  "enum": [
-                    "hit",
-                    "miss"
-                  ]
+                  "description": "Known values: hit, miss; others may be added.",
+                  "type": "string"
                 },
                 "model_ref": {
                   "type": "string"
@@ -3738,10 +3858,14 @@
                         "description": "The same bounds in words, e.g. \"tenure_months 9 to under 17\" (numbers to 6 significant digits).",
                         "type": "string"
                       },
-                      "missing_matches": {
-                        "description": "A blank value counts as meeting this condition.",
+                      "missing": {
+                        "description": "The condition is a blank value alone (text says \"… is missing\").",
                         "type": "boolean",
                         "const": true
+                      },
+                      "missing_matches": {
+                        "description": "true: a blank value counts as meeting this condition, and text says so (e.g. \"region is west or is missing\").",
+                        "type": "boolean"
                       }
                     },
                     "required": [
@@ -3765,7 +3889,7 @@
                         "const": "not_scoreable"
                       },
                       "not_scoreable": {
-                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "description": "What the model cannot read in this case. A null, blank or whitespace value is not listed: it is scored the way the record's own blanks were, and so is a column absent from a cases.rows row when the record had blanks in that column.",
                         "type": "object",
                         "properties": {
                           "missing_columns": {
@@ -3787,6 +3911,11 @@
                                 "type": "string"
                               }
                             }
+                          },
+                          "unknown_id": {
+                            "description": "cases.ids only: the record holds no case with this id. The ids it does hold are answered in the same call; an unknown id bills nothing.",
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "additionalProperties": {}
@@ -3837,27 +3966,23 @@
                             "feature_label": {
                               "type": "string"
                             },
-                            "value": {},
+                            "value": {
+                              "description": "The case's value in this column; null when it is missing (blank, whitespace or null, read the way the record's own blanks were)."
+                            },
                             "likelihood_direction": {
-                              "type": "string",
-                              "enum": [
-                                "higher",
-                                "lower"
-                              ]
+                              "description": "Known values: higher, lower; others may be added.",
+                              "type": "string"
                             },
                             "strength": {
-                              "type": "string",
-                              "enum": [
-                                "strong",
-                                "moderate"
-                              ]
+                              "description": "Known values: strong, moderate; others may be added.",
+                              "type": "string"
                             },
                             "association_not_causal": {
                               "type": "boolean",
                               "const": true
                             },
                             "range": {
-                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank, and text says so (e.g. \"region is missing\"). unseen: a category the model never saw.",
                               "type": "object",
                               "properties": {
                                 "at_least": {
@@ -3949,7 +4074,7 @@
                         "additionalProperties": {}
                       },
                       "levers": {
-                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "description": "Changes that would move this case's chance, when the engine found any: one lever per feature, each with its own lever_token. None is offered on a column the namespace's profile lists as fixed. Associations, not causes.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -3961,7 +4086,16 @@
                               "type": "string"
                             },
                             "lever_token": {
-                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "description": "Opaque, and this lever's own: dg_attest takes it to record an action on this lever's feature.",
+                              "type": "string"
+                            },
+                            "to_one_of": {
+                              "description": "A lever on a category column: the values that count as acting on it (the compliant set).",
+                              "type": "array",
+                              "items": {}
+                            },
+                            "lever_advisory": {
+                              "description": "time_like: the column measures time (tenure, age, *_days, *_months, days_since_*), which an action rarely changes; a profile's fixed lists such columns so no lever is offered on them.",
                               "type": "string"
                             }
                           },
@@ -3999,7 +4133,7 @@
                         "const": "not_scoreable"
                       },
                       "not_scoreable": {
-                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "description": "What the model cannot read in this case. A null, blank or whitespace value is not listed: it is scored the way the record's own blanks were, and so is a column absent from a cases.rows row when the record had blanks in that column.",
                         "type": "object",
                         "properties": {
                           "missing_columns": {
@@ -4021,6 +4155,11 @@
                                 "type": "string"
                               }
                             }
+                          },
+                          "unknown_id": {
+                            "description": "cases.ids only: the record holds no case with this id. The ids it does hold are answered in the same call; an unknown id bills nothing.",
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "additionalProperties": {}
@@ -4071,27 +4210,23 @@
                             "feature_label": {
                               "type": "string"
                             },
-                            "value": {},
+                            "value": {
+                              "description": "The case's value in this column; null when it is missing (blank, whitespace or null, read the way the record's own blanks were)."
+                            },
                             "likelihood_direction": {
-                              "type": "string",
-                              "enum": [
-                                "higher",
-                                "lower"
-                              ]
+                              "description": "Known values: higher, lower; others may be added.",
+                              "type": "string"
                             },
                             "strength": {
-                              "type": "string",
-                              "enum": [
-                                "strong",
-                                "moderate"
-                              ]
+                              "description": "Known values: strong, moderate; others may be added.",
+                              "type": "string"
                             },
                             "association_not_causal": {
                               "type": "boolean",
                               "const": true
                             },
                             "range": {
-                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank, and text says so (e.g. \"region is missing\"). unseen: a category the model never saw.",
                               "type": "object",
                               "properties": {
                                 "at_least": {
@@ -4183,7 +4318,7 @@
                         "additionalProperties": {}
                       },
                       "levers": {
-                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "description": "Changes that would move this case's chance, when the engine found any: one lever per feature, each with its own lever_token. None is offered on a column the namespace's profile lists as fixed. Associations, not causes.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -4195,7 +4330,16 @@
                               "type": "string"
                             },
                             "lever_token": {
-                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "description": "Opaque, and this lever's own: dg_attest takes it to record an action on this lever's feature.",
+                              "type": "string"
+                            },
+                            "to_one_of": {
+                              "description": "A lever on a category column: the values that count as acting on it (the compliant set).",
+                              "type": "array",
+                              "items": {}
+                            },
+                            "lever_advisory": {
+                              "description": "time_like: the column measures time (tenure, age, *_days, *_months, days_since_*), which an action rarely changes; a profile's fixed lists such columns so no lever is offered on them.",
                               "type": "string"
                             }
                           },
@@ -4272,11 +4416,11 @@
                   "const": "unproductive"
                 },
                 "needs": {
-                  "description": "not_yet only: how many more of each the record needs before a model can be checked.",
+                  "description": "not_yet: how many more of each the record needs before a model can be checked. A too_few_predictors refusal: how many more usable columns.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
-                      "description": "How many more labeled rows; 0 when rows are not short.",
+                      "description": "not_yet: how many more labeled rows; 0 when rows are not short.",
                       "anyOf": [
                         {
                           "type": "integer",
@@ -4288,6 +4432,12 @@
                         }
                       ]
                     },
+                    "columns": {
+                      "description": "too_few_predictors: how many more usable predictor columns the record needs (a usable column varies, is not the outcome, an identifier or a time key, and does not restate the outcome).",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
                     "positives": {
                       "description": "How many more positives (rows where the outcome happened); 0 when positives are not short. have.positives_by_part shows which part of the record is short.",
                       "type": "integer",
@@ -4295,7 +4445,7 @@
                       "maximum": 9007199254740991
                     },
                     "countdown": {
-                      "description": "How long until the record holds what needs names, at the record's own pace over its time column (the slower of rows and positives). null without a time column, or when the record gathers none of what is needed. An estimate from the past pace, not a promise.",
+                      "description": "How long until the record holds what needs names (the slower of rows and positives): rows at the record's own pace over its time column, positives at the pace of its recent part, where they are short. null without a time column, or when the record (for positives, its recent part) gathers none of what is needed. An estimate from the past pace, not a promise.",
                       "anyOf": [
                         {
                           "type": "object",
@@ -4306,13 +4456,8 @@
                               "maximum": 9007199254740991
                             },
                             "unit": {
-                              "type": "string",
-                              "enum": [
-                                "days",
-                                "weeks",
-                                "months",
-                                "steps"
-                              ]
+                              "description": "Known values: days, weeks, months, steps; others may be added.",
+                              "type": "string"
                             },
                             "basis": {
                               "type": "string"
@@ -4331,16 +4476,19 @@
                       ]
                     }
                   },
-                  "required": [
-                    "labeled_rows"
-                  ],
                   "additionalProperties": {}
                 },
                 "have": {
-                  "description": "not_yet only: what the record holds now.",
+                  "description": "not_yet, or a too_few_predictors refusal: what the record holds now.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "columns": {
+                      "description": "too_few_predictors: the usable predictor columns the record holds.",
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
@@ -4363,10 +4511,32 @@
                       }
                     }
                   },
-                  "required": [
-                    "labeled_rows"
-                  ],
                   "additionalProperties": {}
+                },
+                "excluded_columns": {
+                  "description": "Columns of the record the model does not use as predictors, and why: restates_outcome (on its own it almost determines the outcome), identifier, time_key, excluded_by_caller (the profile's exclude), unusable (detail: all_missing, constant or too_sparse). fixed_by_caller (the profile's fixed) is still read by the model, and no lever is offered on it.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "column": {
+                        "type": "string"
+                      },
+                      "why": {
+                        "description": "Known values: restates_outcome, identifier, time_key, excluded_by_caller, fixed_by_caller, unusable; others may be added.",
+                        "type": "string"
+                      },
+                      "detail": {
+                        "description": "unusable only: all_missing, constant or too_sparse.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "column",
+                      "why"
+                    ],
+                    "additionalProperties": {}
+                  }
                 },
                 "not_scoreable": {
                   "description": "rank only: cases left out of the ranking because the model cannot read them, each with not_scoreable; the first 100.",
@@ -4383,7 +4553,7 @@
                         "const": "not_scoreable"
                       },
                       "not_scoreable": {
-                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "description": "What the model cannot read in this case. A null, blank or whitespace value is not listed: it is scored the way the record's own blanks were, and so is a column absent from a cases.rows row when the record had blanks in that column.",
                         "type": "object",
                         "properties": {
                           "missing_columns": {
@@ -4405,6 +4575,11 @@
                                 "type": "string"
                               }
                             }
+                          },
+                          "unknown_id": {
+                            "description": "cases.ids only: the record holds no case with this id. The ids it does hold are answered in the same call; an unknown id bills nothing.",
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "additionalProperties": {}
@@ -4455,27 +4630,23 @@
                             "feature_label": {
                               "type": "string"
                             },
-                            "value": {},
+                            "value": {
+                              "description": "The case's value in this column; null when it is missing (blank, whitespace or null, read the way the record's own blanks were)."
+                            },
                             "likelihood_direction": {
-                              "type": "string",
-                              "enum": [
-                                "higher",
-                                "lower"
-                              ]
+                              "description": "Known values: higher, lower; others may be added.",
+                              "type": "string"
                             },
                             "strength": {
-                              "type": "string",
-                              "enum": [
-                                "strong",
-                                "moderate"
-                              ]
+                              "description": "Known values: strong, moderate; others may be added.",
+                              "type": "string"
                             },
                             "association_not_causal": {
                               "type": "boolean",
                               "const": true
                             },
                             "range": {
-                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank, and text says so (e.g. \"region is missing\"). unseen: a category the model never saw.",
                               "type": "object",
                               "properties": {
                                 "at_least": {
@@ -4567,7 +4738,7 @@
                         "additionalProperties": {}
                       },
                       "levers": {
-                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "description": "Changes that would move this case's chance, when the engine found any: one lever per feature, each with its own lever_token. None is offered on a column the namespace's profile lists as fixed. Associations, not causes.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -4579,7 +4750,16 @@
                               "type": "string"
                             },
                             "lever_token": {
-                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "description": "Opaque, and this lever's own: dg_attest takes it to record an action on this lever's feature.",
+                              "type": "string"
+                            },
+                            "to_one_of": {
+                              "description": "A lever on a category column: the values that count as acting on it (the compliant set).",
+                              "type": "array",
+                              "items": {}
+                            },
+                            "lever_advisory": {
+                              "description": "time_like: the column measures time (tenure, age, *_days, *_months, days_since_*), which an action rarely changes; a profile's fixed lists such columns so no lever is offered on them.",
                               "type": "string"
                             }
                           },
@@ -4644,7 +4824,7 @@
                   "additionalProperties": {}
                 },
                 "verdicts_withheld": {
-                  "description": "Only on a paged answer whose Verdicts are too large to share a page with the cases: they are unchanged in the full answer at page.answer_url.",
+                  "description": "On a paged answer whose Verdicts are too large to share a page with the cases (reason too_large_for_one_response), or on an ask with response_format concise (reason response_format_concise): the Verdicts are unchanged in the full answer at page.answer_url.",
                   "type": "object",
                   "properties": {
                     "count": {
@@ -4725,6 +4905,11 @@
             "type": "string",
             "minLength": 1
           },
+          "entity_column": {
+            "description": "The column naming each case: reported as identifier and left out of the usable predictors.",
+            "type": "string",
+            "minLength": 1
+          },
           "predictors": {
             "type": "array",
             "items": {
@@ -4781,9 +4966,51 @@
             }
           },
           "advisory": {
+            "description": "Worth reading, as sentences: e.g. a date column whose every date reads either way (it is read as month first), or a category whose values differ only in case.",
             "type": "array",
             "items": {
               "type": "string"
+            }
+          },
+          "excluded_columns": {
+            "description": "With entity_column: that column, why identifier.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "column": {
+                  "type": "string"
+                },
+                "why": {
+                  "description": "Known values: restates_outcome, identifier, time_key, excluded_by_caller, fixed_by_caller, unusable; others may be added.",
+                  "type": "string"
+                },
+                "detail": {
+                  "description": "unusable only: all_missing, constant or too_sparse.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "column",
+                "why"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "case_variants": {
+            "description": "Per column, values that differ only in case (e.g. [[\"Pro\", \"PRO\"]]). Each spelling stays its own value; nothing is merged. Surrounding spaces are always trimmed.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             }
           }
         },
@@ -4851,6 +5078,10 @@
               ],
               "additionalProperties": false
             }
+          },
+          "partial": {
+            "description": "false (default): the batch is written whole or not at all; one bad row writes nothing, and the invalid_outcomes problem lists every bad row in errors. true: the valid rows are written, and results says what happened to each row.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -4871,11 +5102,43 @@
             "type": "integer",
             "minimum": -9007199254740991,
             "maximum": 9007199254740991
+          },
+          "results": {
+            "description": "partial: true only. One entry per row sent, by index: written, duplicate (an event_id already recorded), or error with the field and what is wrong.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "written",
+                    "duplicate",
+                    "error"
+                  ]
+                },
+                "field": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "index",
+                "status"
+              ],
+              "additionalProperties": {}
+            }
           }
         },
         "required": [
-          "written",
-          "duplicates"
+          "written"
         ],
         "additionalProperties": {}
       },
@@ -4901,22 +5164,12 @@
         "type": "object",
         "properties": {
           "pattern": {
-            "type": "string",
-            "enum": [
-              "unchanged",
-              "changed",
-              "no_prior"
-            ]
+            "description": "Known values: unchanged, changed, no_prior; others may be added.",
+            "type": "string"
           },
           "recommendation": {
             "description": "keep: the refit found the same pattern, renew with dg_extend_model. refit: switch to the new model_ref. abandon: stop asking. no_check_yet: nothing has been compared (pattern no_prior), so it is no reason to renew.",
-            "type": "string",
-            "enum": [
-              "keep",
-              "refit",
-              "abandon",
-              "no_check_yet"
-            ]
+            "type": "string"
           }
         },
         "required": [
@@ -4964,13 +5217,8 @@
         "type": "object",
         "properties": {
           "status": {
-            "type": "string",
-            "enum": [
-              "valid",
-              "invalid_signature",
-              "expired",
-              "unknown_key"
-            ]
+            "description": "Known values: valid, invalid_signature, expired, unknown_key; others may be added.",
+            "type": "string"
           }
         },
         "required": [
@@ -5118,6 +5366,19 @@
           "evaluated_direction": {
             "type": "string"
           },
+          "lever": {
+            "description": "The lever the token belongs to, as the engine evaluated it.",
+            "type": "object",
+            "properties": {
+              "feature": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "feature"
+            ],
+            "additionalProperties": {}
+          },
           "event_id": {
             "type": "string"
           },
@@ -5178,6 +5439,10 @@
                   },
                   "ci_high": {
                     "type": "number"
+                  },
+                  "n_attempted_noncompliant": {
+                    "description": "Cases with an outcome acted on only through non-compliant actions: in neither group.",
+                    "type": "number"
                   }
                 },
                 "required": [
@@ -5223,6 +5488,10 @@
                 "type": "number"
               },
               "attestations": {
+                "type": "number"
+              },
+              "n_attempted_noncompliant": {
+                "description": "Cases acted on only through non-compliant actions: in neither group, so an attempt that missed the target counts as neither acted nor not acted.",
                 "type": "number"
               }
             },
@@ -5468,6 +5737,16 @@
               "maxLength": 200
             }
           },
+          "fixed": {
+            "description": "Columns an action never changes (tenure, age, a signup date): the model still reads them, no lever is offered on them, and answers list them in excluded_columns with why fixed_by_caller.",
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
           "display": {
             "type": "string",
             "enum": [
@@ -5497,6 +5776,12 @@
                     "additionalProperties": {}
                   },
                   "exclude": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "fixed": {
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -5573,13 +5858,8 @@
                   ]
                 },
                 "state": {
-                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows; the same call returns the same refusal. not_yet: too few labeled rows or positives (rows where the outcome happened) to check a model; reasons name what is short (too_few_labeled_rows, too_few_positives, no_positives when the outcome's yes values match no row, too_few_to_hold_out when neither count explains it), needs says how many more of each (0 when that one is not short), and have says what the record holds.",
-                  "type": "string",
-                  "enum": [
-                    "answered",
-                    "refused",
-                    "not_yet"
-                  ]
+                  "description": "The answer's status, the first field that matters. answered: the record supports an answer. refused: the record holds no pattern that holds on held-out rows (reasons no_finding_cleared), or it has too few usable predictor columns to search (reasons too_few_predictors, with needs.columns and have.columns); the same call returns the same refusal. not_yet: too few labeled rows or positives (rows where the outcome happened) to check a model; reasons name what is short (too_few_labeled_rows, too_few_positives, no_positives when the outcome's yes values match no row, too_few_to_hold_out when neither count explains it), needs says how many more of each (0 when that one is not short), and have says what the record holds.",
+                  "type": "string"
                 },
                 "decision": {
                   "description": "The state as a decision: actionable when answered, else not_yet or refused. A pure mapping of state, no new number. Per case, band (with band: true) and not_scoreable still apply.",
@@ -5621,11 +5901,8 @@
                   }
                 },
                 "cache": {
-                  "type": "string",
-                  "enum": [
-                    "hit",
-                    "miss"
-                  ]
+                  "description": "Known values: hit, miss; others may be added.",
+                  "type": "string"
                 },
                 "model_ref": {
                   "type": "string"
@@ -5712,10 +5989,14 @@
                         "description": "The same bounds in words, e.g. \"tenure_months 9 to under 17\" (numbers to 6 significant digits).",
                         "type": "string"
                       },
-                      "missing_matches": {
-                        "description": "A blank value counts as meeting this condition.",
+                      "missing": {
+                        "description": "The condition is a blank value alone (text says \"… is missing\").",
                         "type": "boolean",
                         "const": true
+                      },
+                      "missing_matches": {
+                        "description": "true: a blank value counts as meeting this condition, and text says so (e.g. \"region is west or is missing\").",
+                        "type": "boolean"
                       }
                     },
                     "required": [
@@ -5739,7 +6020,7 @@
                         "const": "not_scoreable"
                       },
                       "not_scoreable": {
-                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "description": "What the model cannot read in this case. A null, blank or whitespace value is not listed: it is scored the way the record's own blanks were, and so is a column absent from a cases.rows row when the record had blanks in that column.",
                         "type": "object",
                         "properties": {
                           "missing_columns": {
@@ -5761,6 +6042,11 @@
                                 "type": "string"
                               }
                             }
+                          },
+                          "unknown_id": {
+                            "description": "cases.ids only: the record holds no case with this id. The ids it does hold are answered in the same call; an unknown id bills nothing.",
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "additionalProperties": {}
@@ -5811,27 +6097,23 @@
                             "feature_label": {
                               "type": "string"
                             },
-                            "value": {},
+                            "value": {
+                              "description": "The case's value in this column; null when it is missing (blank, whitespace or null, read the way the record's own blanks were)."
+                            },
                             "likelihood_direction": {
-                              "type": "string",
-                              "enum": [
-                                "higher",
-                                "lower"
-                              ]
+                              "description": "Known values: higher, lower; others may be added.",
+                              "type": "string"
                             },
                             "strength": {
-                              "type": "string",
-                              "enum": [
-                                "strong",
-                                "moderate"
-                              ]
+                              "description": "Known values: strong, moderate; others may be added.",
+                              "type": "string"
                             },
                             "association_not_causal": {
                               "type": "boolean",
                               "const": true
                             },
                             "range": {
-                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank, and text says so (e.g. \"region is missing\"). unseen: a category the model never saw.",
                               "type": "object",
                               "properties": {
                                 "at_least": {
@@ -5923,7 +6205,7 @@
                         "additionalProperties": {}
                       },
                       "levers": {
-                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "description": "Changes that would move this case's chance, when the engine found any: one lever per feature, each with its own lever_token. None is offered on a column the namespace's profile lists as fixed. Associations, not causes.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -5935,7 +6217,16 @@
                               "type": "string"
                             },
                             "lever_token": {
-                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "description": "Opaque, and this lever's own: dg_attest takes it to record an action on this lever's feature.",
+                              "type": "string"
+                            },
+                            "to_one_of": {
+                              "description": "A lever on a category column: the values that count as acting on it (the compliant set).",
+                              "type": "array",
+                              "items": {}
+                            },
+                            "lever_advisory": {
+                              "description": "time_like: the column measures time (tenure, age, *_days, *_months, days_since_*), which an action rarely changes; a profile's fixed lists such columns so no lever is offered on them.",
                               "type": "string"
                             }
                           },
@@ -5973,7 +6264,7 @@
                         "const": "not_scoreable"
                       },
                       "not_scoreable": {
-                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "description": "What the model cannot read in this case. A null, blank or whitespace value is not listed: it is scored the way the record's own blanks were, and so is a column absent from a cases.rows row when the record had blanks in that column.",
                         "type": "object",
                         "properties": {
                           "missing_columns": {
@@ -5995,6 +6286,11 @@
                                 "type": "string"
                               }
                             }
+                          },
+                          "unknown_id": {
+                            "description": "cases.ids only: the record holds no case with this id. The ids it does hold are answered in the same call; an unknown id bills nothing.",
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "additionalProperties": {}
@@ -6045,27 +6341,23 @@
                             "feature_label": {
                               "type": "string"
                             },
-                            "value": {},
+                            "value": {
+                              "description": "The case's value in this column; null when it is missing (blank, whitespace or null, read the way the record's own blanks were)."
+                            },
                             "likelihood_direction": {
-                              "type": "string",
-                              "enum": [
-                                "higher",
-                                "lower"
-                              ]
+                              "description": "Known values: higher, lower; others may be added.",
+                              "type": "string"
                             },
                             "strength": {
-                              "type": "string",
-                              "enum": [
-                                "strong",
-                                "moderate"
-                              ]
+                              "description": "Known values: strong, moderate; others may be added.",
+                              "type": "string"
                             },
                             "association_not_causal": {
                               "type": "boolean",
                               "const": true
                             },
                             "range": {
-                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank, and text says so (e.g. \"region is missing\"). unseen: a category the model never saw.",
                               "type": "object",
                               "properties": {
                                 "at_least": {
@@ -6157,7 +6449,7 @@
                         "additionalProperties": {}
                       },
                       "levers": {
-                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "description": "Changes that would move this case's chance, when the engine found any: one lever per feature, each with its own lever_token. None is offered on a column the namespace's profile lists as fixed. Associations, not causes.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -6169,7 +6461,16 @@
                               "type": "string"
                             },
                             "lever_token": {
-                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "description": "Opaque, and this lever's own: dg_attest takes it to record an action on this lever's feature.",
+                              "type": "string"
+                            },
+                            "to_one_of": {
+                              "description": "A lever on a category column: the values that count as acting on it (the compliant set).",
+                              "type": "array",
+                              "items": {}
+                            },
+                            "lever_advisory": {
+                              "description": "time_like: the column measures time (tenure, age, *_days, *_months, days_since_*), which an action rarely changes; a profile's fixed lists such columns so no lever is offered on them.",
                               "type": "string"
                             }
                           },
@@ -6246,11 +6547,11 @@
                   "const": "unproductive"
                 },
                 "needs": {
-                  "description": "not_yet only: how many more of each the record needs before a model can be checked.",
+                  "description": "not_yet: how many more of each the record needs before a model can be checked. A too_few_predictors refusal: how many more usable columns.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
-                      "description": "How many more labeled rows; 0 when rows are not short.",
+                      "description": "not_yet: how many more labeled rows; 0 when rows are not short.",
                       "anyOf": [
                         {
                           "type": "integer",
@@ -6262,6 +6563,12 @@
                         }
                       ]
                     },
+                    "columns": {
+                      "description": "too_few_predictors: how many more usable predictor columns the record needs (a usable column varies, is not the outcome, an identifier or a time key, and does not restate the outcome).",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
                     "positives": {
                       "description": "How many more positives (rows where the outcome happened); 0 when positives are not short. have.positives_by_part shows which part of the record is short.",
                       "type": "integer",
@@ -6269,7 +6576,7 @@
                       "maximum": 9007199254740991
                     },
                     "countdown": {
-                      "description": "How long until the record holds what needs names, at the record's own pace over its time column (the slower of rows and positives). null without a time column, or when the record gathers none of what is needed. An estimate from the past pace, not a promise.",
+                      "description": "How long until the record holds what needs names (the slower of rows and positives): rows at the record's own pace over its time column, positives at the pace of its recent part, where they are short. null without a time column, or when the record (for positives, its recent part) gathers none of what is needed. An estimate from the past pace, not a promise.",
                       "anyOf": [
                         {
                           "type": "object",
@@ -6280,13 +6587,8 @@
                               "maximum": 9007199254740991
                             },
                             "unit": {
-                              "type": "string",
-                              "enum": [
-                                "days",
-                                "weeks",
-                                "months",
-                                "steps"
-                              ]
+                              "description": "Known values: days, weeks, months, steps; others may be added.",
+                              "type": "string"
                             },
                             "basis": {
                               "type": "string"
@@ -6305,16 +6607,19 @@
                       ]
                     }
                   },
-                  "required": [
-                    "labeled_rows"
-                  ],
                   "additionalProperties": {}
                 },
                 "have": {
-                  "description": "not_yet only: what the record holds now.",
+                  "description": "not_yet, or a too_few_predictors refusal: what the record holds now.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "columns": {
+                      "description": "too_few_predictors: the usable predictor columns the record holds.",
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
@@ -6337,10 +6642,32 @@
                       }
                     }
                   },
-                  "required": [
-                    "labeled_rows"
-                  ],
                   "additionalProperties": {}
+                },
+                "excluded_columns": {
+                  "description": "Columns of the record the model does not use as predictors, and why: restates_outcome (on its own it almost determines the outcome), identifier, time_key, excluded_by_caller (the profile's exclude), unusable (detail: all_missing, constant or too_sparse). fixed_by_caller (the profile's fixed) is still read by the model, and no lever is offered on it.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "column": {
+                        "type": "string"
+                      },
+                      "why": {
+                        "description": "Known values: restates_outcome, identifier, time_key, excluded_by_caller, fixed_by_caller, unusable; others may be added.",
+                        "type": "string"
+                      },
+                      "detail": {
+                        "description": "unusable only: all_missing, constant or too_sparse.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "column",
+                      "why"
+                    ],
+                    "additionalProperties": {}
+                  }
                 },
                 "not_scoreable": {
                   "description": "rank only: cases left out of the ranking because the model cannot read them, each with not_scoreable; the first 100.",
@@ -6357,7 +6684,7 @@
                         "const": "not_scoreable"
                       },
                       "not_scoreable": {
-                        "description": "What the model cannot read in this case. A null value is not listed: it is scored the way the record's own blanks were.",
+                        "description": "What the model cannot read in this case. A null, blank or whitespace value is not listed: it is scored the way the record's own blanks were, and so is a column absent from a cases.rows row when the record had blanks in that column.",
                         "type": "object",
                         "properties": {
                           "missing_columns": {
@@ -6379,6 +6706,11 @@
                                 "type": "string"
                               }
                             }
+                          },
+                          "unknown_id": {
+                            "description": "cases.ids only: the record holds no case with this id. The ids it does hold are answered in the same call; an unknown id bills nothing.",
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "additionalProperties": {}
@@ -6429,27 +6761,23 @@
                             "feature_label": {
                               "type": "string"
                             },
-                            "value": {},
+                            "value": {
+                              "description": "The case's value in this column; null when it is missing (blank, whitespace or null, read the way the record's own blanks were)."
+                            },
                             "likelihood_direction": {
-                              "type": "string",
-                              "enum": [
-                                "higher",
-                                "lower"
-                              ]
+                              "description": "Known values: higher, lower; others may be added.",
+                              "type": "string"
                             },
                             "strength": {
-                              "type": "string",
-                              "enum": [
-                                "strong",
-                                "moderate"
-                              ]
+                              "description": "Known values: strong, moderate; others may be added.",
+                              "type": "string"
                             },
                             "association_not_causal": {
                               "type": "boolean",
                               "const": true
                             },
                             "range": {
-                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank. unseen: a category the model never saw.",
+                              "description": "The range this case's value fell in, as the model scores it: every value in the range moves the chance the same way, and crossing a bound changes it. missing: the value was blank, and text says so (e.g. \"region is missing\"). unseen: a category the model never saw.",
                               "type": "object",
                               "properties": {
                                 "at_least": {
@@ -6541,7 +6869,7 @@
                         "additionalProperties": {}
                       },
                       "levers": {
-                        "description": "Changes that would move this case's chance, when the engine found any. Associations, not causes.",
+                        "description": "Changes that would move this case's chance, when the engine found any: one lever per feature, each with its own lever_token. None is offered on a column the namespace's profile lists as fixed. Associations, not causes.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -6553,7 +6881,16 @@
                               "type": "string"
                             },
                             "lever_token": {
-                              "description": "Opaque. dg_attest takes it to record an action on this lever.",
+                              "description": "Opaque, and this lever's own: dg_attest takes it to record an action on this lever's feature.",
+                              "type": "string"
+                            },
+                            "to_one_of": {
+                              "description": "A lever on a category column: the values that count as acting on it (the compliant set).",
+                              "type": "array",
+                              "items": {}
+                            },
+                            "lever_advisory": {
+                              "description": "time_like: the column measures time (tenure, age, *_days, *_months, days_since_*), which an action rarely changes; a profile's fixed lists such columns so no lever is offered on them.",
                               "type": "string"
                             }
                           },
@@ -6618,7 +6955,7 @@
                   "additionalProperties": {}
                 },
                 "verdicts_withheld": {
-                  "description": "Only on a paged answer whose Verdicts are too large to share a page with the cases: they are unchanged in the full answer at page.answer_url.",
+                  "description": "On a paged answer whose Verdicts are too large to share a page with the cases (reason too_large_for_one_response), or on an ask with response_format concise (reason response_format_concise): the Verdicts are unchanged in the full answer at page.answer_url.",
                   "type": "object",
                   "properties": {
                     "count": {
@@ -6792,7 +7129,7 @@
                   "type": "string"
                 },
                 "next_step": {
-                  "description": "With too_few_patterns: what could make the question answerable (more columns, or an activity log read with the events or snapshots shape).",
+                  "description": "With defined_by: those columns restate the outcome, and dropping them or excluding them with a profile leaves the question to the other columns. With too_few_patterns: what could make the question answerable (more columns, or an activity log read with the events or snapshots shape).",
                   "type": "string"
                 },
                 "question": {

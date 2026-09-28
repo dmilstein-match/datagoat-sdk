@@ -13,9 +13,11 @@ answers from an existing model with no fit, and `namespace` keeps each of your c
 apart. `verify_offline` checks a Verdict's signature with no call to Datagoat.
 """
 from ._version import __version__
-from .client import Client, DatagoatError, Problem, register
+from .client import (Client, DatagoatError, ModelUnavailableError, NotFoundError, PaymentRequiredError, Problem,
+                     RateLimitError, ValidationError, register)
 from .verify import fetch_keys, verify_offline
 from .questions import choice, events, from_model, panel, rank, score, series, signals, snapshots, traces, yesno
 
-__all__ = ["Client", "DatagoatError", "Problem", "register", "yesno", "score", "choice", "rank", "from_model",
+__all__ = ["Client", "DatagoatError", "ValidationError", "NotFoundError", "ModelUnavailableError", "RateLimitError",
+           "PaymentRequiredError", "Problem", "register", "yesno", "score", "choice", "rank", "from_model",
            "events", "series", "panel", "signals", "traces", "snapshots", "verify_offline", "fetch_keys", "__version__"]

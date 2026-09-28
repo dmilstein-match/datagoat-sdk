@@ -8,13 +8,54 @@ export const DEFAULT_BASE = "https://api.datagoat.io";
 /** The API's request limit; a bigger body would be refused before reaching Datagoat. */
 export const MAX_REQUEST_BYTES = 4_500_000;
 
-export interface Problem { status: number; code: string; detail: string; remedy: string; field?: string; request_id?: string }
+export interface Problem {
+  status: number; code: string; detail: string; remedy: string; field?: string; request_id?: string;
+  /** The code's entry on https://datagoat.io/docs/errors. */
+  doc_url?: string;
+  /** invalid_outcomes: every bad row, as {index, field, detail}. */
+  errors?: Array<{ index?: number; field?: string; detail?: string; [k: string]: unknown }>;
+}
 
+/** A problem the API answered with. Each family has its own subclass, so a catch can tell them
+ *  apart: ValidationError (`field` names what to fix), NotFoundError (and ModelUnavailableError
+ *  for a model_ref that no longer answers), RateLimitError, PaymentRequiredError. A refusal is
+ *  never an exception: it is an answer with state "refused". */
 export class DatagoatError extends Error {
   /** Milliseconds the API asked to wait before retrying (a 429 names it). */
   retryAfterMs?: number;
-  constructor(readonly problem: Problem) { super(`${problem.code}: ${problem.detail} (${problem.remedy})`); }
+  /** reportOutcomes over several chunks: rows of the list already sent and written before the chunk that failed. */
+  writtenBefore = 0;
+  constructor(readonly problem: Problem) { super(`${problem.code}: ${problem.detail} (${problem.remedy})`); this.name = new.target.name; }
   get retryable(): boolean { return [429, 502, 503, 504].includes(this.problem.status); }
+  get code(): string { return this.problem.code; }
+}
+/** 400/422: the request is wrong. `field` names the argument; for invalid_outcomes, `errors` lists every bad row. */
+export class ValidationError extends DatagoatError {
+  get field(): string | undefined { return this.problem.field; }
+  get errors(): NonNullable<Problem["errors"]> { return this.problem.errors ?? []; }
+}
+/** 404/410: what the call names does not exist here, or no longer does (`gone` for 410). */
+export class NotFoundError extends DatagoatError {
+  get gone(): boolean { return this.problem.status === 410; }
+}
+/** A model_ref that does not answer: model_deleted, model_expired (410) or model_ref_missing (404).
+ *  Asking again with the record fits a new model. */
+export class ModelUnavailableError extends NotFoundError {}
+/** 429: this minute's requests are spent; retryAfterMs says how long. */
+export class RateLimitError extends DatagoatError {}
+/** 402: asking about your own data needs a card on file. The samples stay free. */
+export class PaymentRequiredError extends DatagoatError {}
+
+const MODEL_CODES = new Set(["model_deleted", "model_expired", "model_ref_missing"]);
+
+/** The typed error for a problem, by its code family. */
+export function errorFor(p: Problem): DatagoatError {
+  if (MODEL_CODES.has(p.code)) return new ModelUnavailableError(p);
+  if (p.status === 404 || p.status === 410) return new NotFoundError(p);
+  if (p.status === 400 || p.status === 422) return new ValidationError(p);
+  if (p.status === 429) return new RateLimitError(p);
+  if (p.status === 402) return new PaymentRequiredError(p);
+  return new DatagoatError(p);
 }
 
 /** Operations where sending the same request twice cannot do the work twice: reads, an ask (its
@@ -144,6 +185,8 @@ export interface AskOptions {
   acknowledge_decision_support?: boolean; idempotency_key?: string;
   /** "csv" adds export.results_url: every case, one row per question per case, for 24 hours. */
   export?: "csv";
+  /** "concise" leaves each answer's Verdicts out (verdicts_withheld); page.answer_url has the whole answer. */
+  response_format?: "full" | "concise";
   /** Follow a pending first fit to its answer (default true), for at most timeoutMs (default 15 min). */
   wait?: boolean; timeoutMs?: number;
 }
@@ -203,7 +246,11 @@ export class Datagoat {
       json = {};
     }
     if (!r.ok) {
-      const err = new DatagoatError({ status: r.status, code: String(json.code ?? "http_error"), detail: String(json.detail ?? r.statusText), remedy: String(json.remedy ?? "see https://datagoat.io/docs"), ...(json.field ? { field: String(json.field) } : {}), ...(json.request_id ? { request_id: String(json.request_id) } : {}) });
+      const err = errorFor({
+        status: r.status, code: String(json.code ?? "http_error"), detail: String(json.detail ?? r.statusText), remedy: String(json.remedy ?? "see https://datagoat.io/docs"),
+        ...(json.field ? { field: String(json.field) } : {}), ...(json.request_id ? { request_id: String(json.request_id) } : {}),
+        ...(json.doc_url ? { doc_url: String(json.doc_url) } : {}), ...(Array.isArray(json.errors) ? { errors: json.errors as Problem["errors"] } : {}),
+      });
       err.retryAfterMs = retryAfterMs(r, json);
       throw err;
     }
@@ -211,7 +258,8 @@ export class Datagoat {
   }
 
   /** Ask typed questions about cases. Each answer's state is answered | refused | not_yet. The
-   *  answer comes back whole at any size. */
+   *  answer comes back whole at any size. A pending first fit is polled to the end: sending the
+   *  ask again instead of polling would start (and bill) a second fit. */
   async ask(questions: Record<string, Question>, o: AskOptions): Promise<Answer> {
     if (!Object.keys(questions).length) throw new Error("ask needs at least one question");
     if (o.export !== undefined && o.export !== "csv") throw new Error('export is "csv"');
@@ -286,7 +334,7 @@ export class Datagoat {
     const r = await this.f(url, { method: "GET" });
     if (!r.ok) {
       const json = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-      throw new DatagoatError({ status: r.status, code: String(json.code ?? "http_error"), detail: String(json.detail ?? r.statusText), remedy: String(json.remedy ?? "ask again for a new link") });
+      throw errorFor({ status: r.status, code: String(json.code ?? "http_error"), detail: String(json.detail ?? r.statusText), remedy: String(json.remedy ?? "ask again for a new link"), ...(json.doc_url ? { doc_url: String(json.doc_url) } : {}) });
     }
     return r;
   }
@@ -295,8 +343,49 @@ export class Datagoat {
   /** Delete a stored dataset now; otherwise it is deleted 24 hours after its last use. */
   deleteDataset(dataset_id: string) { return this.call<{ dataset_id: string; deleted: true }>("delete-dataset", { dataset_id }); }
   async poll(task_id: string) { return this.whole(await this.call<Answer>("poll", { task_id })); }
-  preflight(dataset_id: string, o: { outcome_column?: string; predictors?: string[] } = {}) { return this.call("preflight", { dataset_id, ...o }); }
-  reportOutcomes(model_ref: string, outcomes: Array<{ entity_id: string; outcome: boolean | number | string; observed_at: string; event_id?: string }>, o: { namespace?: string } = {}) { return this.call("report-outcomes", { model_ref, outcomes, ...stated(o) }); }
+  /** Is the table worth asking about? Free. entity_column is reported as an identifier, never a predictor. */
+  preflight(dataset_id: string, o: { outcome_column?: string; entity_column?: string; predictors?: string[] } = {}) { return this.call("preflight", { dataset_id, ...stated(o) }); }
+  /**
+   * Record what really happened. Up to 10,000 rows (the API's most per call) go in ONE call,
+   * written whole or not at all: a bad row writes nothing and throws ValidationError
+   * (invalid_outcomes) whose `errors` index every bad row. A longer list goes in chunks of
+   * `chunkSize`; each chunk is atomic, but chunks before a failing one stay written. Any error from
+   * a later chunk (validation, rate limit, server, network) says so: `problem.detail` names the
+   * rows already written, `writtenBefore` counts them, and `errors` index rows in `outcomes` as
+   * given. Resending is safe when every row has an event_id. With `partial: true` the valid rows
+   * are written and `results` lists every row by its index in `outcomes`.
+   */
+  async reportOutcomes(model_ref: string, outcomes: Array<{ entity_id: string; outcome: boolean | number | string; observed_at: string; event_id?: string }>, o: { namespace?: string; partial?: boolean; chunkSize?: number } = {}) {
+    const { chunkSize = 10_000, partial, namespace } = o;
+    if (!outcomes.length) throw new Error("no outcomes");
+    if (!(chunkSize >= 1 && chunkSize <= 10_000)) throw new Error("chunkSize is 1 to 10,000");
+    const total: { written: number; duplicates: number; results?: Array<Record<string, unknown>> } = { written: 0, duplicates: 0 };
+    const results: Array<Record<string, unknown>> = [];
+    for (let start = 0; start < outcomes.length; start += chunkSize) {
+      let out: Record<string, unknown>;
+      try {
+        out = await this.call("report-outcomes", { model_ref, outcomes: outcomes.slice(start, start + chunkSize), ...stated({ namespace, partial }) });
+      } catch (e) {
+        if (!(e instanceof DatagoatError) || !start) throw e;
+        // A later chunk failed: rows 0..start-1 were written. Same class, indices in the whole
+        // list, and the rows already written named.
+        const Cls = e.constructor as new (p: Problem) => DatagoatError;
+        const err = new Cls({
+          ...e.problem,
+          detail: `${e.problem.detail} (rows 0 to ${start - 1} were already sent and written: ${total.written} written, ${total.duplicates} duplicate; rows ${start} onward were not)`,
+          ...(e.problem.errors ? { errors: e.problem.errors.map((x) => (typeof x.index === "number" ? { ...x, index: x.index + start } : x)) } : {}),
+        });
+        err.retryAfterMs = e.retryAfterMs;
+        err.writtenBefore = start;
+        throw err;
+      }
+      total.written += Number(out.written ?? 0);
+      total.duplicates += Number(out.duplicates ?? 0);
+      for (const r of (out.results as Array<Record<string, unknown>> | undefined) ?? []) results.push(typeof r.index === "number" ? { ...r, index: r.index + start } : r);
+    }
+    if (partial) total.results = results;
+    return total;
+  }
   drift(model_ref: string, o: { namespace?: string } = {}) { return this.call("drift", { model_ref, ...stated(o) }); }
   /** Which yes/no questions a table could be asked, and whether each is worth asking. Free; fits nothing. */
   suggest(o: { data: DataSource; entity_column: string; time_column?: string; include_categories?: boolean }) { return this.call("suggest", o); }
@@ -310,8 +399,9 @@ export class Datagoat {
   evidence(model_ref: string, o: { namespace?: string } = {}) { return this.call("evidence", { model_ref, ...stated(o) }); }
   /** How the model's earlier calls held up against the outcomes reported for them. */
   trackRecord(model_ref: string, o: { namespace?: string } = {}) { return this.call("track-record", { model_ref, ...stated(o) }); }
-  /** A namespace's profile: with words, exclude or display it replaces it; without, it reads it. */
-  profile(o: { namespace?: string; words?: { case?: string; outcome?: string; columns?: Record<string, string> }; exclude?: string[]; display?: "chance" | "bands" } = {}) {
+  /** A namespace's profile: with words, exclude, fixed or display it replaces it; without, it reads it.
+   *  fixed: columns an action never changes (tenure, age): still read by the model, and no lever is offered on them. */
+  profile(o: { namespace?: string; words?: { case?: string; outcome?: string; columns?: Record<string, string> }; exclude?: string[]; fixed?: string[]; display?: "chance" | "bands" } = {}) {
     return this.call("profile", stated(o));
   }
   /** valid | invalid_signature | expired | unknown_key. Sends no key. */
