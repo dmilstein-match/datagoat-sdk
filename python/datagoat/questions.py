@@ -138,19 +138,57 @@ def traces(*, agent_column: Optional[str] = None, task_column: Optional[str] = N
     return _shape("traces", agent_column=agent_column, task_column=task_column, tool_column=tool_column)
 
 
-def snapshots(*, snapshot_id_column: str, snapshot_time_column: str, dataset_id: Optional[str] = None,
-              rows: Optional[Sequence[Mapping[str, Any]]] = None, csv: Optional[str] = None,
-              fetch_url: Optional[str] = None, outcome_time_column: Optional[str] = None,
-              event_column: Optional[str] = None, value_columns: Optional[Sequence[str]] = None,
+SNAPSHOT_EVERY = ("1d", "1w", "4w")
+SNAPSHOT_HORIZONS = (1, 7, 30, 60, 90)
+
+
+def snapshots(*, snapshot_every: Optional[str] = None, horizon: Optional[int] = None,
+              label: Optional[Mapping[str, Any]] = None, outcome_time_column: Optional[str] = None,
+              terminal: Optional[bool] = None, lookbacks_days: Optional[Sequence[int]] = None,
+              as_of: Optional[str] = None, event_column: Optional[str] = None,
+              value_columns: Optional[Sequence[str]] = None,
+              snapshot_id_column: Optional[str] = None, snapshot_time_column: Optional[str] = None,
+              dataset_id: Optional[str] = None, rows: Optional[Sequence[Mapping[str, Any]]] = None,
+              csv: Optional[str] = None, fetch_url: Optional[str] = None,
               lookback_days: Optional[Sequence[int]] = None) -> Dict[str, Any]:
-    """An event log read as of moments you choose. The record (`data`) is the log; the snapshot table
-    (exactly one of dataset_id, rows, csv, fetch_url) has one row per case per moment, with the same
-    entity column, a snapshot id, the snapshot's time and the outcome. lookback_days: [30, 90],
-    [7, 30] or [90, 365]. Whole cases are held out."""
+    """An event log read as each case was at many moments. Two forms:
+
+    - Without a snapshot table (the usual one): one snapshot of each case every `snapshot_every`
+      (1d, 1w or 4w), each with the outcome in the `horizon` days after it (1, 7, 30, 60 or 90),
+      blank until that window has passed. The outcome is `label` ({"lapsed": True} or
+      {"name": ..., "when": predicate}) or `outcome_time_column` (when each case's outcome
+      happened), not both; the reading names the column (lapsed_90d, {name}_next_90d,
+      {column}_next_90d). `terminal` ends a case at its first yes (default: True for lapsed and
+      outcome_time_column). lookbacks_days: [30, 90], [7, 30] or [90, 365]. Ask with
+      cases={"open": True} for every case as it is today.
+    - With a snapshot table (exactly one of dataset_id, rows, csv, fetch_url): one row per case per
+      moment you choose, with the same entity column, `snapshot_id_column`,
+      `snapshot_time_column` and the outcome. lookback_days: [30, 90], [7, 30] or [90, 365].
+
+    Whole cases are held out either way."""
     table = {k: v for k, v in {"dataset_id": dataset_id, "rows": list(rows) if rows is not None else None,
                                "csv": csv, "fetch_url": fetch_url}.items() if v is not None}
+    if not table:
+        if snapshot_id_column is not None or snapshot_time_column is not None or lookback_days is not None:
+            raise ValueError("snapshot_id_column, snapshot_time_column and lookback_days go with a snapshot table "
+                             "(dataset_id, rows, csv or fetch_url); without one, use snapshot_every, horizon and lookbacks_days")
+        if snapshot_every not in SNAPSHOT_EVERY:
+            raise ValueError("snapshot_every is 1d, 1w or 4w (4w is 28 days; a calendar month varies in length)")
+        if horizon not in SNAPSHOT_HORIZONS:
+            raise ValueError("horizon is 1, 7, 30, 60 or 90 days")
+        if (label is None) == (outcome_time_column is None):
+            raise ValueError('send label ({"lapsed": True} or {"name": ..., "when": ...}) or outcome_time_column, not both')
+        return _shape("snapshots", snapshot_every=snapshot_every, horizon={"value": horizon, "unit": "days"},
+                      label=dict(label) if label is not None else None, outcome_time_column=outcome_time_column,
+                      event_column=event_column, value_columns=list(value_columns) if value_columns else None,
+                      lookbacks_days=list(lookbacks_days) if lookbacks_days else None, terminal=terminal, as_of=as_of)
     if len(table) != 1:
         raise ValueError("the snapshot table is exactly one of dataset_id, rows, csv, fetch_url")
+    if snapshot_id_column is None or snapshot_time_column is None:
+        raise ValueError("a snapshot table needs snapshot_id_column and snapshot_time_column")
+    if any(v is not None for v in (snapshot_every, horizon, label, terminal, lookbacks_days, as_of)):
+        raise ValueError("snapshot_every, horizon, label, terminal, lookbacks_days and as_of go without a snapshot table; "
+                         "with one, the table sets the moments and holds the outcome")
     return _shape("snapshots", snapshots=table, snapshot_id_column=snapshot_id_column,
                   snapshot_time_column=snapshot_time_column, outcome_time_column=outcome_time_column,
                   event_column=event_column, value_columns=list(value_columns) if value_columns else None,

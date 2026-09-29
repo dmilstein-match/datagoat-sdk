@@ -8,6 +8,7 @@ import pytest
 
 from datagoat import Client, DatagoatError, choice, rank, score, yesno
 from datagoat import cli
+from datagoat.client import RETRY_SAFE
 
 SEEN = []
 
@@ -88,12 +89,14 @@ def test_a_pending_fit_is_followed_and_bounded():
 
 def test_problems_are_raised_with_code_remedy_and_field():
     prob = {"type": "https://datagoat.io/problems/unknown_case_id", "title": "t", "status": 422, "detail": "not in the record",
-            "code": "unknown_case_id", "remedy": "send ids that appear", "field": "cases.ids", "request_id": "r1"}
+            "code": "unknown_case_id", "remedy": "send ids that appear", "field": "cases.ids", "request_id": "r1",
+            "engine_request_id": "tk_1"}
     srv, url = serve([(prob, 422)])
     with pytest.raises(DatagoatError) as e:
         Client(api_key="dgk_live_x", base_url=url).ask({"q": yesno("y")}, dataset_id="ds_x", entity_column="a",
                                                         subject_kind="org", cases={"ids": ["nope"]})
     assert (e.value.problem.code, e.value.problem.field, e.value.problem.request_id) == ("unknown_case_id", "cases.ids", "r1")
+    assert e.value.problem.engine_request_id == "tk_1"  # the engine's id for the call (E10)
     assert not e.value.retryable
     srv.shutdown()
 
@@ -323,6 +326,33 @@ def test_a_paged_answer_is_joined_whole_in_order():
     srv.shutdown()
 
 
+def test_compact_is_asked_polled_and_paged_compact():
+    """Spec v3 S10: response_format compact on ask, poll and page; the format is per call."""
+    pending = {"status": "pending", "task_id": "tk_9", "retry_after_ms": 0}
+    first = {"status": "done", "task_id": "tk_9", "answers": {"churn": {"type": "yesno", "state": "answered",
+             "cases": [{"entity_id": "a", "p": 0.4, "p_display": "40%"}], "page": {"offset": 0, "returned": 1, "total": 2},
+             "verdicts_withheld": {"count": 1, "reason": "response_format_compact", "in": "page.answer_url"}}},
+             "page": {"answer_url": "http://x/a", "expires_at": "t", "next_cursor": "c1"}}
+    p2 = {"status": "done", "answers": {"churn": {"type": "yesno", "state": "answered", "cases": [{"entity_id": "b", "p": 0.1, "p_display": "10%"}],
+                                                  "page": {"offset": 1, "returned": 1, "total": 2}}}, "page": {"answer_url": "http://x/a", "expires_at": "t"}}
+    srv, url = serve_h([pending, first, p2])
+    out = quick(url).ask({"churn": yesno("y")}, dataset_id="ds", entity_column="a", subject_kind="org", cases={"ids": ["a", "b"]},
+                         response_format="compact")
+    assert [c["entity_id"] for c in out["answers"]["churn"]["cases"]] == ["a", "b"]
+    assert [p for p, _, _ in SEEN] == ["/v1/ask", "/v1/poll", "/v1/page"]
+    assert SEEN[0][1]["response_format"] == "compact"
+    assert SEEN[1][1] == {"task_id": "tk_9", "response_format": "compact"}
+    assert SEEN[2][1] == {"cursor": "c1", "response_format": "compact"}
+    assert out["page"] == {"answer_url": "http://x/a", "expires_at": "t"}, "the link to the whole answer stays"
+    srv.shutdown()
+    dg = Client(api_key="dgk_live_x", base_url="http://127.0.0.1:9")
+    for bad in ("concise", "short"):
+        with pytest.raises(ValueError):
+            dg.page("c1", response_format=bad)
+        with pytest.raises(ValueError):
+            dg.poll("tk_9", response_format=bad)
+
+
 def test_export_is_requested_and_downloaded_without_the_key(tmp_path):
     csv_text = "question_id,type\nchurn,yesno\n"
     srv, url = serve_h([dict(DONE, export={"format": "csv", "results_url": "X", "expires_at": "t"}), (csv_text, 200), (csv_text, 200)])
@@ -518,13 +548,27 @@ def test_report_outcomes_sends_chunks_and_surfaces_every_bad_row_by_its_index_in
     srv.shutdown()
 
 
+def test_preflight_is_deprecated_for_map_and_still_served():
+    """dg_preflight is deprecated (spec v3 S2): replaced by dg_map, removed at contract 2.0.0, served until then."""
+    srv, url = serve([{"dataset_id": "ds_x", "grain": {}, "resolutions": {}, "blocking": [], "advisory": []}])
+    dg = Client(api_key="dgk_live_x", base_url=url)
+    with pytest.warns(DeprecationWarning, match="deprecated") as w:
+        out = dg.preflight("ds_x", outcome_column="churned")
+    assert "dg_map" in str(w[0].message) and "2.0.0" in str(w[0].message)
+    assert SEEN[-1][0] == "/v1/preflight" and out["dataset_id"] == "ds_x"
+    assert w[0].filename.endswith("test_client.py"), "the warning points at the caller's line"
+    assert "deprecated" in (Client.preflight.__doc__ or "").lower() and "map" in Client.preflight.__doc__
+    srv.shutdown()
+
+
 def test_the_new_fields_are_sent_only_when_stated():
     srv, url = serve([DONE, {"ok": True}, {"ok": True}, {"ok": True}])
     dg = Client(api_key="dgk_live_x", base_url=url)
     dg.ask({"churn": yesno("churned")}, dataset_id="ds_x", entity_column="customer_id", subject_kind="org",
            cases={"ids": ["c1"]}, response_format="concise")
     assert SEEN[-1][1]["response_format"] == "concise"
-    dg.preflight("ds_x", entity_column="customer_id")
+    with pytest.warns(DeprecationWarning):
+        dg.preflight("ds_x", entity_column="customer_id")
     assert SEEN[-1][1] == {"dataset_id": "ds_x", "entity_column": "customer_id"}
     dg.profile("acme", fixed=["tenure_months"])
     assert SEEN[-1][1] == {"namespace": "acme", "fixed": ["tenure_months"]}
@@ -552,3 +596,201 @@ def test_report_outcomes_defaults_to_one_atomic_call_and_any_later_chunk_failure
         assert e.value.written_before == 4
         assert "rows 0 to 3 were already sent and written: 3 written, 1 duplicate; rows 4 onward were not" in e.value.problem.detail
         srv.shutdown()
+
+
+def test_map_sends_the_public_contract_and_is_never_retried_on_a_5xx():
+    SEEN.clear()
+    proposed = {"status": "proposed", "sources": [], "questions": [{"slot": "outcome", "options": ["lapsed", "event_type:e:event=cancelled"], "why": "two"}]}
+    srv, url = serve_h([proposed, BUSY])
+    dg = quick(url)
+    out = dg.map(["sample:parley_events", {"fetch_url": "https://x.example/billing.csv", "label": "billing"}],
+                 outcome_words="cancel", horizon=90, snapshot_every="4w")
+    assert out["questions"][0]["slot"] == "outcome"
+    path, body, _ = SEEN[0]
+    assert path == "/v1/map"
+    assert body == {"sources": [{"dataset_id": "sample:parley_events"}, {"fetch_url": "https://x.example/billing.csv", "label": "billing"}],
+                    "outcome_words": ["cancel"], "horizon": {"value": 90, "unit": "days"}, "snapshot_every": "4w"}
+    with pytest.raises(DatagoatError) as e:
+        dg.map(mapping_id="mp_" + "a" * 25, closed_since="2025-10-01")
+    assert e.value.problem.status == 503 and len(SEEN) == 2, "a confirm stores a mapping: never re-sent"
+    assert SEEN[1][1] == {"mapping_id": "mp_" + "a" * 25, "closed_since": "2025-10-01"}
+    with pytest.raises(ValueError):
+        dg.map()
+    srv.shutdown()
+
+
+def test_map_problems_carry_their_members():
+    SEEN.clear()
+    expired = {"status": 410, "code": "mapping_expired", "detail": "gone", "remedy": "map again", "field": "mapping_id", "manifest": {"entity": "account_id"}}
+    incomplete = {"status": 422, "code": "mapping_answers_incomplete", "detail": "Some questions have no answer (outcome).", "remedy": "answer", "field": "answers.outcome"}
+    srv, url = serve([(expired, 410), (incomplete, 422)])
+    dg = Client("dgk_live_x", base_url=url)
+    with pytest.raises(DatagoatError) as e:
+        dg.map(mapping_id="mp_" + "b" * 25)
+    assert e.value.problem.manifest == {"entity": "account_id"}
+    with pytest.raises(DatagoatError) as e2:
+        dg.map(["ds_" + "c" * 25], answers={})
+    assert e2.value.problem.field == "answers.outcome" and "(outcome)" in e2.value.problem.detail
+    assert not hasattr(e2.value.problem, "slots"), "the slots are named in detail; no extension member (A2, A11)"
+    srv.shutdown()
+
+
+def test_cli_map_proposes_and_lists_the_questions_for_the_user(monkeypatch, capsys):
+    calls = []
+
+    class Fake:
+        def map(self, sources, **kw):
+            calls.append((sources, kw))
+            return {"status": "proposed", "questions": [{"slot": "entity", "source": "parley_tickets", "options": ["account_id", "user_id"], "why": "two"}]}
+
+    monkeypatch.setattr(cli, "Client", lambda *a, **k: Fake())
+    assert cli.main(["map", "sample:parley_events", "https://x.example/t.csv", "--outcome", "cancel", "--horizon", "90", "--every", "4w"]) == 0
+    (sources, kw), = calls
+    assert sources == [{"dataset_id": "sample:parley_events"}, {"fetch_url": "https://x.example/t.csv"}]
+    assert kw["outcome_words"] == ["cancel"] and kw["horizon"] == 90 and kw["snapshot_every"] == "4w" and kw["answers"] is None
+    err = capsys.readouterr().err
+    assert "question entity (parley_tickets): account_id | user_id" in err
+    assert cli.main(["map"]) == 2
+
+
+def test_snapshots_v2_form_builds_the_grid_shape_and_asks_open_cases():
+    from datagoat import snapshots
+    s = snapshots(snapshot_every="4w", horizon=90, label={"lapsed": True}, event_column="event", lookbacks_days=[7, 30])
+    assert s == {"kind": "snapshots", "snapshot_every": "4w", "horizon": {"value": 90, "unit": "days"},
+                 "label": {"lapsed": True}, "event_column": "event", "lookbacks_days": [7, 30]}
+    by_time = snapshots(snapshot_every="1w", horizon=30, outcome_time_column="cancelled_at", terminal=True, as_of="2025-12-29")
+    assert by_time == {"kind": "snapshots", "snapshot_every": "1w", "horizon": {"value": 30, "unit": "days"},
+                       "outcome_time_column": "cancelled_at", "terminal": True, "as_of": "2025-12-29"}
+    for bad in [dict(snapshot_every="1mo", horizon=90, label={"lapsed": True}),
+                dict(snapshot_every="4w", horizon=45, label={"lapsed": True}),
+                dict(snapshot_every="4w", horizon=90),
+                dict(snapshot_every="4w", horizon=90, label={"lapsed": True}, outcome_time_column="x"),
+                dict(snapshot_every="4w", horizon=90, label={"lapsed": True}, snapshot_id_column="snap"),
+                dict(snapshot_every="4w", horizon=90, label={"lapsed": True}, dataset_id="ds_2", snapshot_id_column="s", snapshot_time_column="t")]:
+        with pytest.raises(ValueError):
+            snapshots(**bad)
+    srv, url = serve([DONE])
+    dg = Client(api_key="dgk_live_x", base_url=url)
+    dg.ask({"quiet": yesno("lapsed_90d")}, dataset_id="ds_1", entity_column="account_id", subject_kind="org", time_column="ts",
+           shape=s, cases={"open": True})
+    _, body, _ = SEEN[-1]
+    assert body["cases"] == {"open": True} and body["shape"]["snapshot_every"] == "4w"
+    srv.shutdown()
+
+
+def test_cli_ask_open_cases_of_a_mapped_record(monkeypatch, capsys):
+    calls = []
+
+    class Fake:
+        def ask(self, questions, **kw):
+            calls.append((questions, kw))
+            return {"status": "done", "answers": {}}
+
+        def verify_all(self, out):
+            return True
+
+    monkeypatch.setattr(cli, "Client", lambda *a, **k: Fake())
+    q = '{"q":{"type":"yesno","outcome_column":"lapsed_90d","positive_values":["1"]}}'
+    assert cli.main(["ask", q, "--data", "ds_1", "--entity", "account_id", "--open", "--time", "snapshot_at", "--group", "account_id"]) == 0
+    (_, kw), = calls
+    assert kw["cases"] == {"open": True} and kw["time_column"] == "snapshot_at" and kw["group_column"] == "account_id"
+    with pytest.raises(SystemExit):
+        cli.main(["ask", q, "--data", "ds_1", "--entity", "account_id", "--open", "--cases", "a1"])
+
+
+BT_DONE = {"status": "done", "task_id": "tk_" + "a" * 24, "backtest_id": "bt1_x", "decision": "supported", "cutoffs": [],
+           "summary": {}, "verdict": {"verdict_id": "v", "kind": "backtest"}, "signature": {"kid": "k"}, "fits_run": 6}
+
+
+def test_backtest_sends_the_public_contract_follows_a_pending_walk_and_is_retried_with_its_key():
+    SEEN.clear()
+    pending = ({"status": "pending", "task_id": "tk_" + "a" * 24, "retry_after_ms": 500}, 202)
+    srv, url = serve_h([BUSY, pending, BT_DONE])
+    dg = quick(url)
+    out = dg.backtest("sample:parley_record", subject_kind="org", every="4w", last=6, baseline="none", idempotency_key="bt-1")
+    assert out["decision"] == "supported"
+    assert [s[0] for s in SEEN] == ["/v1/backtest", "/v1/backtest", "/v1/poll"]
+    assert SEEN[0][1] == {"data": {"dataset_id": "sample:parley_record"}, "cutoffs": {"every": "4w", "last": 6},
+                          "baseline": "none", "subject_kind": "org", "idempotency_key": "bt-1"}
+    assert SEEN[1][1] == SEEN[0][1], "retried with the same idempotency key: the walk is not started twice"
+    srv.shutdown()
+    SEEN.clear()
+    srv, url = serve_h([BT_DONE])
+    quick(url).backtest("ds_" + "b" * 25, subject_kind="person", acknowledge_decision_support=True)
+    body = SEEN[0][1]
+    assert isinstance(body["idempotency_key"], str) and "cutoffs" not in body and body["acknowledge_decision_support"] is True
+    srv.shutdown()
+    with pytest.raises(ValueError):
+        Client("dgk_live_x", base_url=url).backtest("ds_x", subject_kind="org", baseline="best")
+
+
+def test_cli_backtest_prints_the_result_and_checks_its_verdict(monkeypatch, capsys):
+    calls = []
+
+    class Fake:
+        def backtest(self, dataset_id, **kw):
+            calls.append((dataset_id, kw))
+            return dict(BT_DONE)
+
+        def verify(self, verdict, signature):
+            calls.append(("verify", verdict["kind"]))
+            return "valid"
+
+    monkeypatch.setattr(cli, "Client", lambda *a, **k: Fake())
+    assert cli.main(["backtest", "sample:parley_record", "--every", "4w", "--last", "6", "--baseline", "none"]) == 0
+    (ds, kw), verified = calls
+    assert ds == "sample:parley_record" and kw["every"] == "4w" and kw["last"] == 6 and kw["baseline"] == "none"
+    assert kw["subject_kind"] == "org" and verified == ("verify", "backtest")
+    out = capsys.readouterr().out
+    assert '"decision": "supported"' in out and "verify: valid" in out
+
+
+SC_OUT = {"schedule": {"schedule_id": "sc_" + "a" * 25, "mapping_id": "mp_" + "a" * 25, "cadence": "monthly", "state": "active",
+                       "next_run_at": "2026-10-01T00:00:00Z", "model_ref": None, "last_run": None},
+          "watch_url": "https://datagoat.io/watch/x"}
+
+
+def test_schedule_sends_the_public_contract_and_is_not_retried_on_a_5xx():
+    SEEN.clear()
+    srv, url = serve_h([SC_OUT])
+    out = quick(url).schedule("mp_" + "a" * 25, cadence="monthly", subject_kind="org", namespace="acme")
+    assert out["schedule"]["state"] == "active"
+    assert SEEN[0][0] == "/v1/schedule"
+    assert SEEN[0][1] == {"mapping_id": "mp_" + "a" * 25, "cadence": "monthly", "subject_kind": "org", "namespace": "acme"}
+    srv.shutdown()
+    SEEN.clear()
+    srv, url = serve_h([BUSY, SC_OUT])
+    with pytest.raises(DatagoatError):
+        quick(url).schedule("mp_" + "a" * 25, cadence="daily", subject_kind="org")
+    assert len(SEEN) == 1, "a retry could create a second schedule"
+    srv.shutdown()
+    SEEN.clear()
+    srv, url = serve_h([BUSY, {"schedule_id": "sc_x", "deleted": True}])
+    with pytest.raises(DatagoatError):
+        quick(url).delete_schedule("sc_x")
+    assert [s[0] for s in SEEN] == ["/v1/delete-schedule"], "dg_delete_schedule is not in RETRY_SAFE either"
+    srv.shutdown()
+    assert "schedule" not in RETRY_SAFE and "delete-schedule" not in RETRY_SAFE
+    with pytest.raises(ValueError):
+        Client("dgk_live_x", base_url=url).schedule("mp_x", cadence="hourly", subject_kind="org")
+
+
+def test_cli_schedule_creates_and_deletes(monkeypatch, capsys):
+    calls = []
+
+    class Fake:
+        def schedule(self, mapping_id, **kw):
+            calls.append(("schedule", mapping_id, kw))
+            return dict(SC_OUT)
+
+        def delete_schedule(self, schedule_id):
+            calls.append(("delete", schedule_id))
+            return {"schedule_id": schedule_id, "deleted": True}
+
+    monkeypatch.setattr(cli, "Client", lambda *a, **k: Fake())
+    assert cli.main(["schedule", "mp_" + "a" * 25, "--cadence", "weekly"]) == 0
+    assert calls[0] == ("schedule", "mp_" + "a" * 25, {"cadence": "weekly", "subject_kind": "org"})
+    assert '"state": "active"' in capsys.readouterr().out
+    assert cli.main(["schedule", "--delete", "sc_x"]) == 0
+    assert calls[1] == ("delete", "sc_x")
+    assert cli.main(["schedule", "mp_x"]) == 2

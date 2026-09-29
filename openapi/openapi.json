@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Datagoat API",
-    "version": "1.8.0",
-    "description": "Ask yes/no, score, choice and rank questions about cases. Datagoat answers from what happened to cases like them: deterministic, with reasons, signed, and it refuses rather than guess. MCP: https://api.datagoat.io/mcp\n\n## Which journey\n\nFive journeys organise the operations: each operation is tagged with the journeys that use it, https://api.datagoat.io/journeys.arazzo.yaml has each journey as an Arazzo 1.1.0 workflow, and `describe` lists them with ready-to-run calls.\n\n| Journey | Fits when the user… | Not when… | First call |\n|---|---|---|---|\n| [Try it](https://datagoat.io/docs/quickstart) | has no data yet, or wants to see an answer and a refusal before using their own | they already have a table of past cases (Ask your data) | `dg_describe`, then `dg_ask` (a sample's ready-to-run ask) |\n| [Ask your data](https://datagoat.io/docs/ask-your-data) | has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it | they will score cases every day for their own customers (Ship a product) | `dg_add_dataset` (upload: true for a file a person holds), then `dg_suggest` |\n| [Ship a product](https://datagoat.io/docs/build) | will score many customers' cases repeatedly, on a schedule, inside their own product | it is a one-off question about one table (Ask your data) | `dg_ask` (with namespace and model_ttl_days), then `dg_ask` (by model_ref, no fit) |\n| [Run it](https://datagoat.io/docs/run) | already has a model_ref in use and is learning what happened to the cases it scored | no model has been fitted yet (Ask your data) | `dg_report_outcomes`, then `dg_drift` |\n| [Prove it](https://datagoat.io/docs/prove) | must show someone the calls were right, or measure whether acting on them worked | they only need the answer (Ask your data) | `dg_verify`, then `dg_track_record` (or dg_evidence, whether acting on the calls worked) |",
+    "version": "1.9.0",
+    "description": "Ask yes/no, score, choice and rank questions about cases. Datagoat answers from what happened to cases like them: deterministic, with reasons, signed, and it refuses rather than guess. MCP: https://api.datagoat.io/mcp\n\n## Which journey\n\nFive journeys organise the operations: each operation is tagged with the journeys that use it, https://api.datagoat.io/journeys.arazzo.yaml has each journey as an Arazzo 1.1.0 workflow, and `describe` lists them with ready-to-run calls.\n\n| Journey | Fits when the user… | Not when… | First call |\n|---|---|---|---|\n| [Try it](https://datagoat.io/docs/quickstart) | has no data yet, or wants to see an answer and a refusal before using their own | they already have a table of past cases (Ask your data) | `dg_describe`, then `dg_ask` (a sample's ready-to-run ask) |\n| [Ask your data](https://datagoat.io/docs/ask-your-data) | has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it | they will score cases for many customers of their own product (Ship a product) | `dg_add_dataset` (upload: true, one per source), then `dg_map` (returns the ask; dg_backtest and dg_ask follow; a schedule needs fetch_url sources) |\n| [Ship a product](https://datagoat.io/docs/build) | will score many customers' cases repeatedly, on a schedule, inside their own product | it is a one-off question about one table (Ask your data) | `dg_ask` (with namespace and model_ttl_days), then `dg_ask` (by model_ref, no fit) |\n| [Run it](https://datagoat.io/docs/run) | already has a model_ref in use and is learning what happened to the cases it scored | no model has been fitted yet (Ask your data) | `dg_report_outcomes`, then `dg_schedule` (or refit_of + dg_drift by hand) |\n| [Prove it](https://datagoat.io/docs/prove) | must show someone the calls were right, or measure whether acting on them worked | they only need the answer (Ask your data) | `dg_verify`, then `dg_track_record` (or dg_evidence, whether acting on the calls worked) |\n\nOperations by journey: Try it: dg_describe, dg_ask, dg_verify, dg_map, dg_backtest; Ask your data: dg_add_dataset, dg_map, dg_backtest, dg_suggest, dg_preflight, dg_ask, dg_poll, dg_page; Ship a product: dg_ask, dg_profile, dg_extend_model, dg_delete_model, dg_map; Run it: dg_report_outcomes, dg_schedule, dg_delete_schedule, dg_drift, dg_extend_model, dg_delete_model; Prove it: dg_verify, dg_backtest, dg_attest, dg_report_outcomes, dg_evidence, dg_track_record.",
     "contact": {
       "url": "https://datagoat.io"
     }
@@ -28,7 +28,7 @@
     },
     {
       "name": "Ask your data",
-      "description": "Fits when the user has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it. Not when they will score cases every day for their own customers.",
+      "description": "Fits when the user has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it. Not when they will score cases for many customers of their own product.",
       "externalDocs": {
         "url": "https://datagoat.io/docs/ask-your-data"
       }
@@ -64,7 +64,7 @@
       "post": {
         "operationId": "dg_ask",
         "summary": "Ask",
-        "description": "For a question about cases from a record of past outcomes (a table, a log, a series), or scoring new cases from an existing model_ref; the questions worth trying on an unfamiliar table come from dg_suggest instead. Answers typed questions about cases from a record of past outcomes. A call sends the record (data), questions keyed by id, and the cases to answer; answers return keyed by the same ids. Question types: yesno (the chance the outcome happens), score (that chance as a level: unlikely, possible, likely, very_likely), choice (the best option for each case, with each option's chance, most_likely and least_likely; choice is the only type that needs outcome_is_desirable), rank (cases in order of the chance). Questions about one record can share one call, and questions on the same outcome and outcome_is_desirable share one fit. The record can be a table (one row per case) or, with shape, an event log, a time series, a panel, sensor signals, agent traces, or snapshots (an event log read as of each moment in a snapshot table, e.g. a deal at each stage). Building a product: namespace keeps each of your customers' models and usage apart; model_ttl_days (1 to 365) sets how long a fitted model answers; a question that names model_ref instead of outcome_column scores new cases from that model with no fit (send cases.rows, or a newer record and cases.ids), and every answer lists model_columns, the columns its model reads. Each answer has a state: answered; refused (the record holds no pattern that holds on held-out rows, and the same call returns the same refusal); or not_yet (too few labeled rows or positives; needs gives how many more of each, and reasons name what is short). A case the model cannot read (a column it reads is absent, or a value it never saw) comes back as state not_scoreable, naming them, with no chance; it bills nothing. An answered question carries, per case, p and up to four reasons (feature_label, value, likelihood_direction, strength, and range: the band of values the case's value fell in, e.g. \"tenure_months 9 to under 17\"), and a signed Verdict covering its cases. yesno, score and rank answers also carry pattern: the conditions, with cut points, under which the outcome is most common (e.g. \"support_tickets over 3\"), and per case pattern_match {matched, of, met}. Reasons and patterns are associations, not causes; likelihood_direction is the direction the chance moved, not whether that is good news. Answers are deterministic: the same record and question give the same answer. A first fit on a large record returns status pending with a task_id for dg_poll. Over MCP, an answer larger than one tool result (about 60,000 characters, roughly 60 cases with their Verdict) returns its first page: each list carries page {offset, returned, total}, page.next_cursor leads to the rest through dg_page, and page.answer_url downloads the whole answer as JSON. export: csv adds a CSV download of every case. response_format concise leaves the Verdicts out of the response (verdicts_withheld says how many); they stay in the full answer at page.answer_url, and states, chances and reasons are the same. Free to try on the samples, e.g. data.dataset_id sample:saas_churn, entity_column customer_id, outcome_column churned, cases {ids: [\"cust_0001\"]}. Cost: one decision per answered case, and a fit the first time a record is asked about or when a question names refit_of (1,000 free fits a month, then $0.01 each); refusals and not_yet bill no decisions, and the samples are free",
+        "description": "For a question about cases from a record of past outcomes (a table, a log, a series), or scoring new cases from an existing model_ref; the questions worth trying on an unfamiliar table come from dg_suggest instead. Answers typed questions about cases from a record of past outcomes. A call sends the record (data), questions keyed by id, and the cases to answer; answers return keyed by the same ids. Question types: yesno (the chance the outcome happens), score (that chance as a level: unlikely, possible, likely, very_likely), choice (the best option for each case, with each option's chance, most_likely and least_likely; choice is the only type that needs outcome_is_desirable), rank (cases in order of the chance). Questions about one record can share one call, and questions on the same outcome and outcome_is_desirable share one fit. The record can be a table (one row per case) or, with shape, an event log, a time series, a panel, sensor signals, agent traces, or snapshots (an event log read as of each moment in a snapshot table, e.g. a deal at each stage). Building a product: namespace keeps each of your customers' models and usage apart; model_ttl_days (1 to 365) sets how long a fitted model answers; a question that names model_ref instead of outcome_column scores new cases from that model with no fit (send cases.rows, or a newer record and cases.ids), and every answer lists model_columns, the columns its model reads. Each answer has a state: answered; refused (the record holds no pattern that holds on held-out rows, and the same call returns the same refusal); or not_yet (too few labeled rows or positives; needs gives how many more of each, and reasons name what is short). A case the model cannot read (a column it reads is absent, or a value it never saw) comes back as state not_scoreable, naming them, with no chance; it bills nothing. An answered question carries, per case, p and up to four reasons (feature_label, value, likelihood_direction, strength, and range: the band of values the case's value fell in, e.g. \"tenure_months 9 to under 17\"), and a signed Verdict covering its cases. yesno, score and rank answers also carry pattern: the conditions, with cut points, under which the outcome is most common (e.g. \"support_tickets over 3\"), and per case pattern_match {matched, of, met}. Reasons and patterns are associations, not causes; likelihood_direction is the direction the chance moved, not whether that is good news. Answers are deterministic: the same record and question give the same answer. A first fit on a large record returns status pending with a task_id for dg_poll. Over MCP, an answer larger than one tool result (about 60,000 characters, roughly 60 cases with their Verdict) returns its first page: each list carries page {offset, returned, total}, page.next_cursor leads to the rest through dg_page, and page.answer_url downloads the whole answer as JSON. export: csv adds a CSV download of every case. response_format concise leaves the Verdicts out of the response (verdicts_withheld says how many); they stay in the full answer at page.answer_url, and states, chances and reasons are the same. response_format compact also shows each case as entity_id, p, p_display and, when the answer has them, band, level and says: about a twentieth of the full size, for scoring many cases. Free to try on the samples, e.g. data.dataset_id sample:saas_churn, entity_column customer_id, outcome_column churned, cases {ids: [\"cust_0001\"]}. Cost: one decision per answered case, and a fit the first time a record is asked about or when a question names refit_of (1,000 free fits a month, then $0.01 each); refusals and not_yet bill no decisions, and the samples are free",
         "tags": [
           "Try it",
           "Ask your data",
@@ -137,7 +137,7 @@
       "post": {
         "operationId": "dg_add_dataset",
         "summary": "Add a dataset",
-        "description": "For a record asked about more than once, or too large to send inline; a one-off ask can carry its record inline (data.rows, data.csv or data.fetch_url on dg_ask) instead. Stores a record (any shape) so later asks can name it by dataset_id. Free. Takes rows or csv (up to 10,000 rows or 3,000,000 characters, and 4.5 MB, per call), a fetch_url to download (up to 50 MB), or upload: true for large files: it returns upload_page, a link a person opens in a browser to drop in a CSV of up to 250 MB (valid one hour), and upload_url, a presigned URL a program PUTs the file to. Calling again with the returned dataset_id and more rows appends a piece; pieces append in order until the first ask or preflight seals the dataset, and a piece with different columns is refused. Returns dataset_id, status (ready | open | awaiting_upload), rows and columns. A stored dataset is deleted 24 hours after it was last used, or at once with dg_delete_dataset",
+        "description": "For a record asked about more than once, or too large to send inline; a one-off ask can carry its record inline (data.rows, data.csv or data.fetch_url on dg_ask) instead. Stores a record (any shape) so later asks can name it by dataset_id. Free. Takes rows or csv (up to 10,000 rows or 3,000,000 characters, and 4.5 MB, per call), a fetch_url to download (up to 50 MB), or upload: true for large files: it returns upload_page, a link a person opens in a browser to drop in a CSV of up to 250 MB (valid one hour), upload_pieces_url, where a program POSTs the file in pieces of up to 4 MB on api.datagoat.io itself (each piece to <upload_pieces_url>/<index> from 0, then <upload_pieces_url>/complete), and upload_url, a presigned URL on the storage host a program may PUT the file to instead. A gzip-compressed CSV or a Parquet file (recognised by its bytes) is passed to the engine as it is, by fetch_url or upload, and the dataset then reports rows and columns as null. Calling again with the returned dataset_id and more rows appends a piece; pieces append in order until the first ask or preflight seals the dataset, and a piece with different columns is refused. Returns dataset_id, status (ready | open | awaiting_upload), rows and columns. A stored dataset is deleted 24 hours after it was last used, or at once with dg_delete_dataset",
         "tags": [
           "Ask your data"
         ],
@@ -198,7 +198,7 @@
       "post": {
         "operationId": "dg_poll",
         "summary": "Poll a task",
-        "description": "For an ask that came back with status pending and a task_id; the later pages of a finished answer come from dg_page instead. Free. Returns the current status of a pending task (a first ask on a large record): status pending (with stage and elapsed_ms) until it finishes, then the same object the original call would have returned, paged the same way over MCP. retry_after_ms is the suggested wait between polls. Re-sending the original call instead would start a second fit. Results are kept for 24 hours",
+        "description": "For an ask or a backtest that came back with status pending and a task_id; the later pages of a finished answer come from dg_page instead. Free. Returns the current status of a pending task (a first ask on a large record, or a backtest): status pending (with stage and elapsed_ms) until it finishes, then the same object the original call would have returned, paged the same way over MCP. retry_after_ms is the suggested wait between polls. Re-sending the original call instead would start a second fit. response_format compact shows the finished answer's cases compact, as on dg_ask. Results are kept for 24 hours",
         "tags": [
           "Ask your data"
         ],
@@ -269,10 +269,11 @@
       "post": {
         "operationId": "dg_preflight",
         "summary": "Check a table before asking",
-        "description": "For checking one table before its first ask; the list of questions a table could be asked comes from dg_suggest instead. Free; fits nothing. Reports whether a table is worth asking about before the first ask: grain (whether one row is one kind of thing), resolutions (what each column's values are; an ambiguous column is not a sound predictor), and fitness (positives per usable predictor over labeled rows). blocking entries mean an answer from this table would not be believable; advisory entries are worth reading. It reports and refuses nothing, and a clean preflight does not promise a pattern exists. Like an ask, it seals a dataset still taking pieces. Tables only",
+        "description": "For checking one table before its first ask, deprecated and served until contract 2.0.0; the list of questions a table could be asked comes from dg_suggest instead, and on the same table dg_map reports the same and more. Free; fits nothing. Reports whether a table is worth asking about before the first ask: grain (whether one row is one kind of thing), resolutions (what each column's values are; an ambiguous column is not a sound predictor), and fitness (positives per usable predictor over labeled rows). blocking entries mean an answer from this table would not be believable; advisory entries are worth reading. It reports and refuses nothing, and a clean preflight does not promise a pattern exists. Like an ask, it seals a dataset still taking pieces. Tables only",
         "tags": [
           "Ask your data"
         ],
+        "deprecated": true,
         "x-dg-cost": "free",
         "requestBody": {
           "required": true,
@@ -392,7 +393,7 @@
       "post": {
         "operationId": "dg_drift",
         "summary": "Has the pattern moved?",
-        "description": "For deciding whether a refitted model is kept, replaced or abandoned; how a model's calls fared against reported outcomes is dg_track_record instead. Free. For a model_ref from an ask that named refit_of, compares the new fit with the old: pattern is unchanged | changed | no_prior, and recommendation is keep | refit | abandon | no_check_yet (nothing has been compared yet, so it is no reason to renew a model). The chain is built by asking again on the new version of a record with refit_of set to the previous model_ref. A single refusal on a refresh is not drift",
+        "description": "For deciding whether a refitted model is kept, replaced or abandoned; how a model's calls fared against reported outcomes is dg_track_record instead. Free. For a model_ref from an ask that named refit_of, compares the new fit with the old: pattern is unchanged | changed | no_prior, and recommendation is keep | refit | abandon | no_check_yet (nothing has been compared yet, so it is no reason to renew a model). The chain is built by asking again on the new version of a record with refit_of set to the previous model_ref. refit_quality compares the two fits' held-out lift (a refit that measures worse is keep, not refit), keep_model_ref names the model to go on using, and note_code with note says why when the engine gave a reason. A single refusal on a refresh is not drift",
         "tags": [
           "Run it"
         ],
@@ -453,7 +454,7 @@
       "post": {
         "operationId": "dg_verify",
         "summary": "Verify a Verdict",
-        "description": "For checking a Verdict before anyone relies on it; the SDKs' verify_offline checks the same signature with no call to Datagoat. Free, and needs no key over REST. Checks that a Verdict is genuine and unaltered. Takes the verdict and signature exactly as received (re-serialising them breaks the signature). Returns status: valid | invalid_signature | expired | unknown_key. An expired Verdict is stale and its question can be asked again. Public keys: https://api.datagoat.io/.well-known/jwks.json",
+        "description": "For checking a Verdict before anyone relies on it; the SDKs' verify_offline checks the same signature with no call to Datagoat. Free, and needs no key over REST. Checks that a Verdict is genuine and unaltered. Takes the verdict and signature exactly as received (re-serialising them breaks the signature). Returns status: valid | invalid_signature | expired | unknown_key. An expired Verdict is stale and its question can be asked again. An answer's Verdicts and a backtest's (kind backtest, which has no expiry) are checked the same way. Public keys: https://api.datagoat.io/.well-known/jwks.json",
         "tags": [
           "Try it",
           "Prove it"
@@ -639,7 +640,7 @@
       "post": {
         "operationId": "dg_attest",
         "summary": "Record an action",
-        "description": "For recording that a case was acted on through one of its levers; what then happened to the case is dg_report_outcomes instead. Free. Records that a case was acted on through one of its levers, so dg_evidence can compare cases acted on with cases not acted on. Takes the model_ref of the answer, the case's entity_id, the lever_token from that case's levers, the feature's new value after the action (post_value) and when the action happened (acted_at). The engine checks the new value against the lever's target without revealing the target, and returns compliant, dose_fraction (how far toward the target the case moved, 0 to 1) and evaluated_feature (the feature the token checks). Each lever is one feature with its own lever_token; a lever on a category column carries to_one_of, the values that count as acting on it. Only compliant actions count as acted; a non-compliant one leaves the case in neither group. Idempotent by event_id. Needs the write:outcomes capability: a person signed in through an MCP host has it; an API key has it when created with \"Can report outcomes\"",
+        "description": "For recording that a case was acted on through one of its levers; what then happened to the case is dg_report_outcomes instead. Free. Records that a case was acted on through one of its levers, so dg_evidence can compare cases acted on with cases not acted on. Takes the model_ref of the answer, the case's entity_id, the lever_token from that case's levers, the feature's new value after the action (post_value) and when the action happened (acted_at). The engine checks the new value against the lever's target, which the token carries sealed, and returns compliant, dose_fraction (how far the case moved toward the target: 1 reached it, above 1 went past it, below 0 moved away, absent when it cannot be measured; with the case's earlier value, one dose shows where the target lies) and evaluated_feature (the feature the token checks). Each lever is one feature with its own lever_token; a lever on a category column carries to_one_of, the values that count as acting on it. Only compliant actions count as acted; a non-compliant one leaves the case in neither group. Idempotent by event_id. Needs the write:outcomes capability: a person signed in through an MCP host has it; an API key has it when created with \"Can report outcomes\"",
         "tags": [
           "Prove it"
         ],
@@ -822,7 +823,7 @@
       "post": {
         "operationId": "dg_profile",
         "summary": "A namespace's profile",
-        "description": "For the words, excluded columns, fixed columns (no lever offered) and display of one namespace (one of a builder's customers), set once; the answers themselves come from dg_ask. Free. The profile of a namespace (one of your customers): the words its answers use, columns never used, columns no lever touches, and what its end users see. Sent with words, exclude, fixed or display, it replaces the whole profile (a field left out is reset); sent with only namespace (or nothing, for the workspace itself), it returns the current one. words: case (what a case is called, e.g. customer), outcome (the outcome in plain words, e.g. cancels), columns (a phrase per column, e.g. {\"tenure_months\": \"months as a customer\"}). exclude: columns of a table record that no fit in this namespace uses (a new fit, so a new model_ref); the columns that frame a question (outcome, entity, time, group) and columns the record lacks are left out of it, and a shaped record or a model_ref question is not affected (the answer's profile.exclusions_applied says whether they were used). fixed: columns an action never changes (tenure, age, a signup date); the model still reads them, no lever is offered on them, and answers list them in excluded_columns with why fixed_by_caller. display: chance (default) or bands; with bands, the sentence each case carries names its band, and the answer says display bands, a signal for an end-user surface to show bands only (the API still returns every chance). Each answer in the namespace then carries profile {hash, display, exclusions_applied} and, per case, says: one sentence built from these words and the engine's own values, verbatim. Each Verdict names the profile's hash.",
+        "description": "For the words, excluded columns, fixed columns (no lever offered) and display of one namespace (one of a builder's customers), set once; the answers themselves come from dg_ask. Free. The profile of a namespace (one of your customers): the words its answers use, columns never used, columns no lever touches, and what its end users see. Sent with words, exclude, fixed or display, it replaces the whole profile (a field left out is reset); sent with only namespace (or nothing, for the workspace itself), it returns the current one. words: case (what a case is called, e.g. customer), outcome (the outcome in plain words, e.g. cancels), columns (a phrase per column, e.g. {\"tenure_months\": \"months as a customer\"}). exclude: columns of a table record that no fit in this namespace uses (a new fit, so a new model_ref); the columns that frame a question (outcome, entity, time, group) and columns the record lacks are left out of it, and a shaped record or a model_ref question is not affected (the answer's profile.exclusions_applied says whether they were used). fixed: columns an action never changes (tenure, age, a signup date); the model still reads them, no lever is offered on them, and answers list them in excluded_columns with why fixed_by_caller. display: chance (default) or bands; with bands, the sentence each case carries names its band, and the answer says display bands, a signal for an end-user surface to show bands only (the API still returns every chance). Each answer in the namespace then carries profile {hash, display, exclusions_applied} and, per case, says: one sentence built from these words and the engine's own values, verbatim (the chance as its p_display, e.g. 70%); none on a case the engine declined (refused: true). Each Verdict names the profile's hash.",
         "tags": [
           "Ship a product"
         ],
@@ -883,7 +884,7 @@
       "post": {
         "operationId": "dg_page",
         "summary": "Next page of an answer",
-        "description": "For the rest of an answer that came back paged over MCP (page.next_cursor); an ask still running is dg_poll instead, and the whole answer at once is page.answer_url. Free. Returns the next page of an answer that was too large for one response, from page.next_cursor. Each answer in the page keeps its type, state and model_ref, and its list (cases, or ranked for rank) carries page {offset, returned, total}. Pages are slices of the stored answer in its original order; the last page has no next_cursor. Cursors last as long as the answer: 24 hours",
+        "description": "For the rest of an answer that came back paged over MCP (page.next_cursor); an ask still running is dg_poll instead, and the whole answer at once is page.answer_url. Free. Returns the next page of an answer that was too large for one response, from page.next_cursor. Each answer in the page keeps its type, state and model_ref, and its list (cases, or ranked for rank) carries page {offset, returned, total}. Pages are slices of the stored answer in its original order; the last page has no next_cursor. response_format is chosen per call: a cursor names a place in the stored answer, not a format, so the same cursor gives full or compact cases. Cursors last as long as the answer: 24 hours",
         "tags": [
           "Ask your data"
         ],
@@ -944,7 +945,7 @@
       "post": {
         "operationId": "dg_suggest",
         "summary": "Which questions are worth trying on this table?",
-        "description": "For an unfamiliar table: the yes/no questions worth trying on it; asking one is dg_ask, and checking a question already chosen is dg_preflight. Free; fits nothing. Lists the yes/no questions a table could be asked, worth trying first, and says for each whether it is worth asking. Candidates are the table's two-valued columns (converted, churned, lapsed), plus, with include_categories, each value of a column with 3 to 8 values (plan = pro). Each candidate carries outcome_column, positive_values, the share of rows that are yes (prevalence), worth_asking (the engine's quick check that the record holds enough distinct patterns to try; it runs no fit), defined_by (columns that on their own almost completely determine the outcome, so the question restates the data rather than predicts it) and a ready-to-send question. worth_asking is a screen, not an answer: measured on 267 candidate questions across 15 records, it passed 60 of the 65 that dg_ask answered, and about half of the questions it passes are answered. Tables only; entity_column and time_column are never candidates",
+        "description": "For an unfamiliar table: the yes/no questions worth trying on it; asking one is dg_ask, and turning the table (or a log) into a record to ask about, with a report on its columns, is dg_map. Free; fits nothing. Lists the yes/no questions a table could be asked, worth trying first, and says for each whether it is worth asking. Candidates are the table's two-valued columns (converted, churned, lapsed), plus, with include_categories, each value of a column with 3 to 8 values (plan = pro). Each candidate carries outcome_column, positive_values, the share of rows that are yes (prevalence), worth_asking (the engine's quick check that the record holds enough distinct patterns to try; it runs no fit), defined_by (columns that on their own almost completely determine the outcome, so the question restates the data rather than predicts it) and a ready-to-send question. worth_asking is a screen, not an answer: measured on 267 candidate questions across 15 records, it passed 60 of the 65 that dg_ask answered, and about half of the questions it passes are answered. Tables only; entity_column and time_column are never candidates",
         "tags": [
           "Ask your data"
         ],
@@ -1067,7 +1068,7 @@
       "post": {
         "operationId": "dg_delete_model",
         "summary": "Delete a model",
-        "description": "For retiring a model now (dg_drift said abandon, or a customer left); a stored record is removed with dg_delete_dataset instead. Free. Deletes a model now: its model_ref stops answering, and outcome reports, attestations and evidence for it stop too; its Verdicts can still be verified. Asking about the same record again fits (and counts) a new model. Deleting again returns the same result. Without this call a model stops answering when it expires. Needs the write:outcomes capability (a person signed in through an MCP host has it; an API key has it when created with \"Can report outcomes\")",
+        "description": "For retiring a model now (dg_drift said abandon, or a customer left); a stored record is removed with dg_delete_dataset instead. Free. Deletes a model now: its model_ref stops answering, and outcome reports, attestations and evidence for it stop too (those already made stay in the engine's append-only ledger); its Verdicts can still be verified. Asking about the same record again fits (and counts) a new model. Deleting again returns the same result. Without this call a model stops answering when it expires. Needs the write:outcomes capability (a person signed in through an MCP host has it; an API key has it when created with \"Can report outcomes\")",
         "tags": [
           "Ship a product",
           "Run it"
@@ -1090,6 +1091,264 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/dg_delete_model_output"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited: this workspace has used its requests for this minute. Retry-After and retry_after_ms say how long to wait.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/map": {
+      "post": {
+        "operationId": "dg_map",
+        "summary": "Map sources into a record",
+        "description": "For turning what a person or product has (a table, a log, or logs with a table) into a record Datagoat can ask about: proposals with their multiplicity, one question per slot where two survive, honest-empty when none; the ask itself is dg_ask, and a question already chosen on one table is dg_preflight until 2.0. Free (a proposal and a confirm read the sources; neither is a fit). Takes one to three sources (dataset_id or fetch_url): one table, or one or two event logs with at most one table. Without answers it proposes and stores nothing: per source whether it is a table or a log, the columns that could name each case and its time column (each candidate with its gate's verdict and code), the outcomes it could be asked about (offers, each with offer_id, kind, code and why; with a log, an event type, the table's outcome time, or lapsed), the join of a table onto the logs, and questions: one per slot where two or more candidates survive, with its options. A slot with one survivor takes it; a slot with none is status empty with empty_reason. A single table also carries preflight's resolutions, fitness, blocking, advisory and case_variants. With answers it confirms: every question needs its answer (mapping_answers_incomplete names the slots), and the engine builds the record. With a log, each case is read every snapshot_every with the outcome looked for over the horizon; a reading whose horizon has not passed by as_of has no label yet, and each case's reading at as_of is today's open case. A table's numbers, flags and text are left out as as_of_export, and a column that on its own almost determines the outcome as restates_outcome. A confirm returns mapping_id, dataset_id, record (rows, entities, labelled and open cases, positives), manifest, open_cases and ask, a ready-to-run dg_ask on today's open cases (subject_kind is the caller's to add). A confirm whose outcome fails its gate at this horizon is status not_runnable, with the proposal. A new horizon on a record uses one of its three; a fourth is horizon_budget_exhausted. mapping_id replays a confirm: fetch_url sources are fetched and the record rebuilt; with closed_since it adds closed[], the readings whose outcome became known since. A proposal is never paged: 8 candidates or offers per slot, 3 samples per candidate, 64 resolutions per table (columns_omitted counts the rest), 50 open case ids. Free to try on the samples: sources sample:parley_events, sample:parley_tickets and sample:parley_billing",
+        "tags": [
+          "Try it",
+          "Ask your data",
+          "Ship a product"
+        ],
+        "x-dg-cost": "free",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dg_map_input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/dg_map_output"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited: this workspace has used its requests for this minute. Retry-After and retry_after_ms say how long to wait.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/backtest": {
+      "post": {
+        "operationId": "dg_backtest",
+        "summary": "What the record's past supports",
+        "description": "For what a built record's own past supports: a fit at each past cutoff on what was known then, graded on what came next, against a naive rule; today's answer is dg_ask, and how live calls held up is dg_track_record. Walks forward over a record dg_map built from a log (data.dataset_id; or sample:parley_record): at each of the last cutoffs on the record's grid whose horizon has passed by its as_of (cutoffs.last, 3 to 12, default 6; cutoffs.every, default the record's snapshot_every), a fit on what was known then (the readings closed by the cutoff, on exactly the columns the mapping carried), graded on what came next for every case alive at the cutoff. Per cutoff: train and scored counts, state (graded, not_yet or refused with the fit's reasons), capture and lift at the top 10% and 20% of cases, calibration in ten bins, and the baseline: one numeric column ranked on its own (baseline single_column, the default), graded the same way. summary holds positives-weighted means over the graded cutoffs (nothing is pooled across windows), and decision is supported (at least 3 graded cutoffs with positives, lift at the top 10% at or above the engine's bar and above the baseline's), not_supported, or not_yet (fewer than 3 graded). Every number is the engine's; a signed Verdict of kind backtest covers them (dg_verify checks it). It is history, not a call about today: today's open cases are the mapping's ask. It runs as a task: status pending with a task_id for dg_poll and a watch_url, the stages loading, cutoff i of K and grading. A record that is not a built log record is dataset_not_built; a cutoffs.every finer than the record's snapshot_every, or not a multiple of it, is backtest_cutoffs_invalid. Cost: one fit per cutoff that ran (1,000 free fits a month, then $0.01 each); a cutoff fitted before on the same record is reused and free; free on sample:parley_record",
+        "tags": [
+          "Try it",
+          "Ask your data",
+          "Prove it"
+        ],
+        "x-dg-cost": "one fit per cutoff that ran (a cutoff fitted before on the same record is reused, free); no decisions; free on the sample record",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dg_backtest_input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/dg_backtest_output"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Pending: the first fit is still running; dg_poll with task_id returns the result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/dg_backtest_output"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited: this workspace has used its requests for this minute. Retry-After and retry_after_ms say how long to wait.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/schedule": {
+      "post": {
+        "operationId": "dg_schedule",
+        "summary": "Keep a mapping answered on a cadence",
+        "description": "For keeping a confirmed mapping answered on a cadence: each run re-reads the sources, rebuilds the record, refits with refit_of, reads dg_drift, scores the open cases and reports the outcomes that closed; the same calls a person would make with dg_ask and dg_report_outcomes, made on time. Creates a schedule on a confirmed dg_map mapping whose sources are all fetch_url, and enqueues its first run (watch_url shows it). Each run makes, in order: map (the mapping replayed: every source fetched again, the record rebuilt, closed_since the last run), fit (the mapping's question on the new record: plain on the first run, then with refit_of the model in use; skipped, with no fit billed, when the record's labelled readings are the same as at the last fit, row for row, not just in number), drift (dg_drift on the refit), score (today's open cases, from the model in use), report (the outcomes that became known since the last run, from the replay's closed readings, each with event_id <mapping_id>:<entity>:<snapshot_at> and observed_at its label_observed_at, so a replayed report writes nothing twice). The policy is fixed: keep renews the kept model to the day after the next run (never further); refit switches to the new model; abandon stops the schedule. Every step is an ordinary Datagoat call with idempotency_key <run_id>:<step>, so a run stopped mid-step resumes at the next tick without billing twice. Runs are dispatched hourly, at most 10 at a time; cadence daily, weekly or monthly (a calendar month). A run halts the schedule (state halted, halt_code) when the workspace cannot be billed, when the key it runs as was revoked (credential_revoked), or when a source cannot be fetched (source_unreachable). Needs a live dgk_ API key created with \"Can report outcomes\" (schedule_key_required otherwise, including a sign-in over OAuth: a schedule runs as a key, which can be revoked); a test key is test_key_samples_only. The key's id and scopes and the sources' fetch headers (encrypted) are stored with the schedule and deleted with it (dg_delete_schedule). dg_describe lists schedules with their last run. The question is the mapping's yes/no question",
+        "tags": [
+          "Run it"
+        ],
+        "x-dg-cost": "each run bills the calls it makes: its fit (none when the record's labelled readings are unchanged) and its answered cases; the schedule itself is free",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dg_schedule_input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/dg_schedule_output"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited: this workspace has used its requests for this minute. Retry-After and retry_after_ms say how long to wait.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/delete-schedule": {
+      "post": {
+        "operationId": "dg_delete_schedule",
+        "summary": "Delete a schedule",
+        "description": "For ending a schedule and forgetting its stored credential and headers; the models and ledgers it made stay, as dg_delete_model and dg_track_record describe them. Free. Deletes a schedule now: no further run starts, and the key id, scopes and encrypted fetch headers stored with it are deleted. The mapping stays (with its own copy of the headers), and so do the models the schedule fitted and the outcomes it reported. Deleting again returns unknown_schedule. Needs the write:outcomes capability",
+        "tags": [
+          "Run it"
+        ],
+        "x-dg-cost": "free",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dg_delete_schedule_input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/dg_delete_schedule_output"
                 }
               }
             }
@@ -1418,7 +1677,12 @@
             "type": "string"
           },
           "request_id": {
-            "type": "string"
+            "type": "string",
+            "description": "This request's id at Datagoat (also the x-request-id response header); quote it to support."
+          },
+          "engine_request_id": {
+            "type": "string",
+            "description": "Only when the analysis engine raised the problem: the engine's id for that call (the task_id, for an ask's fit). Quote it beside request_id to support."
           },
           "doc_url": {
             "type": "string",
@@ -1445,6 +1709,11 @@
                 "index"
               ]
             }
+          },
+          "manifest": {
+            "type": "object",
+            "description": "mapping_expired only: the manifest of the mapping whose record is gone (what it was built from, and how).",
+            "additionalProperties": true
           },
           "retry_after_ms": {
             "type": "integer",
@@ -1493,7 +1762,7 @@
                 "maxLength": 3000000
               },
               "fetch_url": {
-                "description": "A public https URL Datagoat downloads the CSV from. No redirects; private and internal hosts are refused.",
+                "description": "A public https URL Datagoat downloads the file from: a CSV, a gzip-compressed CSV or a Parquet file (read by the engine). No redirects; private and internal hosts are refused.",
                 "type": "string",
                 "format": "uri"
               },
@@ -1657,6 +1926,11 @@
                   },
                   "additionalProperties": {}
                 }
+              },
+              "open": {
+                "description": "Today's open cases, found by the engine: on a record dg_map built (or a snapshots shape without a snapshot table), one row per case at as_of, whose outcome is not known yet; on any other record, the rows whose outcome is blank, the latest per case. None open is an answer with no cases, not an error.",
+                "type": "boolean",
+                "const": true
               }
             },
             "additionalProperties": false
@@ -1667,11 +1941,11 @@
             "minLength": 1
           },
           "shape": {
-            "description": "How to read the record when it is not one row per case: an event log, a series, a panel, signals, traces, or snapshots (an event log plus a snapshot table: each case as it was at each moment). Omit for a table. The engine reads the record into rows per case before it fits; with a model_ref question, an events or snapshots record is read with the columns that model's fit chose. dg_describe lists each shape with a ready-to-run ask.",
+            "description": "How to read the record when it is not one row per case: an event log, a series, a panel, signals, traces, or snapshots (an event log read into one row per case every snapshot_every, each with the outcome in the horizon after it; or, with a snapshot table, as of moments you choose). Omit for a table. The engine reads the record into rows per case before it fits; with a model_ref question, an events or snapshots record is read with the columns that model's fit chose. dg_describe lists each shape with a ready-to-run ask.",
             "type": "object",
             "properties": {
               "kind": {
-                "description": "table: one row per case (the default). events: an event log, many rows per case. series: a time series per case, one row per case per period, with an outcome on each row. panel: periods per case, with the outcome read from a column's trend or final window. signals: timestamped sensor readings, with fault or event intervals in the same table. traces: a log of runs (one row per run) with agent, task or tool columns. snapshots: an event log read as of moments you choose, one case per row of a snapshot table (a deal as it entered each stage), with the outcome in the snapshot table.",
+                "description": "table: one row per case (the default). events: an event log, many rows per case. series: a time series per case, one row per case per period, with an outcome on each row. panel: periods per case, with the outcome read from a column's trend or final window. signals: timestamped sensor readings, with fault or event intervals in the same table. traces: a log of runs (one row per run) with agent, task or tool columns. snapshots: an event log read into one row per case per period (snapshot_every), each with the outcome in the horizon after it, which stays blank until the horizon has passed; or, with a snapshot table (shape.snapshots), the log read as of moments you choose (a deal as it entered each stage), with the outcome in the snapshot table.",
                 "type": "string",
                 "enum": [
                   "table",
@@ -1742,7 +2016,7 @@
                 "maxLength": 200
               },
               "label": {
-                "description": "events (required): {lapsed: true}, or {name, when}. panel (required): {trend_of, direction?, alpha?}, or {window_of, periods?, agg?}.",
+                "description": "events (required): {lapsed: true}, or {name, when}. snapshots without a snapshot table: the same, required unless outcome_time_column is set. panel (required): {trend_of, direction?, alpha?}, or {window_of, periods?, agg?}.",
                 "anyOf": [
                   {
                     "anyOf": [
@@ -1888,7 +2162,7 @@
                 ]
               },
               "lookback_days": {
-                "description": "events, older form (days only): the two activity windows before the outcome window; lookback with horizon is the newer form. snapshots: the two activity windows before each snapshot, in days. Default [30, 90].",
+                "description": "events, older form (days only): the two activity windows before the outcome window; lookback with horizon is the newer form. snapshots with a snapshot table: the two activity windows before each snapshot, in days. Default [30, 90].",
                 "anyOf": [
                   {
                     "type": "array",
@@ -1931,6 +2205,54 @@
                   }
                 ]
               },
+              "lookbacks_days": {
+                "description": "snapshots without a snapshot table: the two activity windows before each snapshot, in days: [30, 90] (default), [7, 30] or [90, 365].",
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "number",
+                        "const": 30
+                      },
+                      {
+                        "type": "number",
+                        "const": 90
+                      }
+                    ]
+                  },
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "number",
+                        "const": 7
+                      },
+                      {
+                        "type": "number",
+                        "const": 30
+                      }
+                    ]
+                  },
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "number",
+                        "const": 90
+                      },
+                      {
+                        "type": "number",
+                        "const": 365
+                      }
+                    ]
+                  }
+                ]
+              },
+              "terminal": {
+                "description": "snapshots without a snapshot table: true ends a case at its first yes (no snapshot after it, and it is not an open case today). Default: true for {lapsed: true} and outcome_time_column, false for {name, when}.",
+                "type": "boolean"
+              },
               "lookback": {
                 "description": "events, with horizon {value, unit}: the two activity windows before the outcome window, in the horizon's unit. Default: the unit's first pair (days [30, 90], hours [6, 24], steps [5, 20], ...).",
                 "type": "array",
@@ -1970,18 +2292,19 @@
                 }
               },
               "snapshot_every": {
-                "description": "signals (required): one snapshot of each case per this period.",
+                "description": "snapshots without a snapshot table (required): one snapshot of each case every 1d, 1w or 4w (28 days; a calendar month varies in length). signals (required): 15min, 1h, 6h, 1d or 1w.",
                 "type": "string",
                 "enum": [
                   "15min",
                   "1h",
                   "6h",
                   "1d",
-                  "1w"
+                  "1w",
+                  "4w"
                 ]
               },
               "horizon": {
-                "description": "events: {value, unit}, the outcome window at the end of the log, in minutes, hours, days, weeks or steps (e.g. {value: 24, unit: 'hours'}). signals (required): a number of SNAPSHOTS (1, 3, 7 or 30); a snapshot's outcome is 1 when an event starts within that many snapshots, so 3 at 6h is 18 hours.",
+                "description": "events: {value, unit}, the outcome window at the end of the log, in minutes, hours, days, weeks or steps (e.g. {value: 24, unit: 'hours'}). snapshots without a snapshot table (required): {value: 1, 7, 30, 60 or 90, unit: 'days'}, the window after each snapshot its outcome looks at. signals (required): a number of SNAPSHOTS (1, 3, 7 or 30); a snapshot's outcome is 1 when an event starts within that many snapshots, so 3 at 6h is 18 hours.",
                 "anyOf": [
                   {
                     "anyOf": [
@@ -2037,13 +2360,13 @@
                 "maximum": 9007199254740991
               },
               "as_of": {
-                "description": "events, signals: the end of the log, ISO-8601 (or a whole step, with unit steps). Default: the latest time in the data.",
+                "description": "events, signals, snapshots without a snapshot table: the end of the log, ISO-8601 (or a whole step, with unit steps). Default: the latest time in the data.",
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 40
               },
               "snapshots": {
-                "description": "snapshots (required): the snapshot table, one row per case at the moment it is scored (a deal as it entered each stage), with the same entity column as the event log, a snapshot id, the snapshot's time and the outcome. Exactly one of dataset_id, rows, csv, fetch_url.",
+                "description": "snapshots, the form with a snapshot table: the snapshot table, one row per case at the moment it is scored (a deal as it entered each stage), with the same entity column as the event log, a snapshot id, the snapshot's time and the outcome. Exactly one of dataset_id, rows, csv, fetch_url.",
                 "type": "object",
                 "properties": {
                   "dataset_id": {
@@ -2085,19 +2408,19 @@
                 "additionalProperties": false
               },
               "snapshot_id_column": {
-                "description": "snapshots (required): the snapshot table's id column; cases.ids name snapshots by it.",
+                "description": "snapshots with a snapshot table (required): the snapshot table's id column; cases.ids name snapshots by it.",
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200
               },
               "snapshot_time_column": {
-                "description": "snapshots (required): when each snapshot was taken. Each snapshot's features count events at or before this moment.",
+                "description": "snapshots with a snapshot table (required): when each snapshot was taken. Each snapshot's features count events at or before this moment.",
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200
               },
               "outcome_time_column": {
-                "description": "snapshots: when each snapshot's outcome happened. A snapshot taken at or after its own outcome is left out and counted.",
+                "description": "snapshots without a snapshot table: a column holding when each case's outcome happened; the outcome is then 1 when it falls in the horizon after a snapshot (instead of a label), written as <column>_next_<h>d. With a snapshot table: when each snapshot's outcome happened; a snapshot taken at or after its own outcome is left out and counted.",
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200
@@ -2130,7 +2453,7 @@
             "maximum": 365
           },
           "group_column": {
-            "description": "For a table with several rows per case (the same deal at each stage, all with that deal's outcome): the column naming the case each row belongs to. The fit then holds out whole cases, so its held-out numbers are about cases it never saw. Tables only; the snapshots shape sets it itself.",
+            "description": "For a table with several rows per case (the same deal at each stage, all with that deal's outcome, or a record dg_map built): the column naming the case each row belongs to, which may be entity_column itself. The fit then holds out whole cases, so its held-out numbers are about cases it never saw. With time_column, the most recent cases are held out. Tables only; the snapshots shape sets it itself.",
             "type": "string",
             "minLength": 1
           },
@@ -2140,11 +2463,12 @@
             "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
           },
           "response_format": {
-            "description": "full (default): every answer with its signed Verdicts. concise: the same answers without verdicts; each answer says verdicts_withheld {count}, and the whole answer, Verdicts included, stays at page.answer_url for 24 hours. States, chances and reasons are the same either way. A pending ask polled with dg_poll returns the full answer.",
+            "description": "full (default): every answer with its signed Verdicts. concise: the same answers without verdicts; each answer says verdicts_withheld {count}, and the whole answer, Verdicts included, stays at page.answer_url for 24 hours. compact: the same answers with each case as entity_id, p, p_display and, when the answer has them, band, level and says (a case with no chance keeps state and not_scoreable, a declined case refused and refused_reason, a choice case choice); the Verdicts are left out as with concise, and the whole answer stays at page.answer_url for 24 hours. States and chances are the same in every format. A pending ask polled with dg_poll returns the full answer unless the poll asks for compact.",
             "type": "string",
             "enum": [
               "full",
-              "concise"
+              "concise",
+              "compact"
             ]
           },
           "idempotency_key": {
@@ -2506,7 +2830,7 @@
                   ]
                 },
                 "quality": {
-                  "description": "How the model was measured: realised_lift, top_decile_lift, validation_scheme, confidence_tier, and held_out {whole_cases_by} when every row of one case was held out together (the accuracy is on cases the model never saw).",
+                  "description": "How the model was measured: realised_lift, top_decile_lift, validation_scheme, confidence_tier, and held_out {whole_cases_by} when every row of one case was held out together (the accuracy is on cases the model never saw), and record {labelled_rows, labelled_entities, positives_entities, open_rows} when the outcome is blank on some rows (not known yet): the fit read the labelled rows only, and those counts are what it was measured on.",
                   "type": "object",
                   "propertyNames": {
                     "type": "string"
@@ -2639,6 +2963,23 @@
                             },
                             "additionalProperties": {
                               "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "p_display": {
+                        "description": "The chance as the engine writes it for showing: a whole percent (\"15%\"), \"<1%\" below 0.005, \">99%\" from 0.995. For choice, a map of option to that text. Show this rather than rounding p; a profile's says quotes it. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
                             }
                           }
                         ]
@@ -2883,6 +3224,23 @@
                             },
                             "additionalProperties": {
                               "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "p_display": {
+                        "description": "The chance as the engine writes it for showing: a whole percent (\"15%\"), \"<1%\" below 0.005, \">99%\" from 0.995. For choice, a map of option to that text. Show this rather than rounding p; a profile's says quotes it. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
                             }
                           }
                         ]
@@ -3185,7 +3543,7 @@
                   "additionalProperties": {}
                 },
                 "have": {
-                  "description": "not_yet, or a too_few_predictors refusal: what the record holds now.",
+                  "description": "not_yet, or a refusal: what the record holds now.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
@@ -3221,9 +3579,63 @@
                         "minimum": -9007199254740991,
                         "maximum": 9007199254740991
                       }
+                    },
+                    "arms_found": {
+                      "description": "refused or not_yet, when the engine's search counted them: how many candidate conditions (arms) it found across the record's columns. A pattern needs 4.",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
                     }
                   },
                   "additionalProperties": {}
+                },
+                "horizons_tried": {
+                  "description": "refused or not_yet, on a record read from a log (snapshots): every horizon this record's source has been read at (this one included; three at most per source), each with the state of this same question there. Facts only: the answer picks no horizon.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "horizon": {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "unit": {
+                            "type": "string",
+                            "const": "days"
+                          }
+                        },
+                        "required": [
+                          "value",
+                          "unit"
+                        ],
+                        "additionalProperties": {}
+                      },
+                      "label": {
+                        "description": "The outcome column the record was read with at that horizon, e.g. cancelled_next_30d.",
+                        "type": "string"
+                      },
+                      "state": {
+                        "description": "That record's answer to this same question: answered, refused or not_yet when it was asked, not_asked when the record was read at that horizon but this question was not asked of it.",
+                        "type": "string",
+                        "enum": [
+                          "answered",
+                          "refused",
+                          "not_yet",
+                          "not_asked"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "horizon",
+                      "label",
+                      "state"
+                    ],
+                    "additionalProperties": {}
+                  }
                 },
                 "excluded_columns": {
                   "description": "Columns of the record the model does not use as predictors, and why: restates_outcome (on its own it almost determines the outcome), identifier, time_key, excluded_by_caller (the profile's exclude), unusable (detail: all_missing, constant or too_sparse). fixed_by_caller (the profile's fixed) is still read by the model, and no lever is offered on it.",
@@ -3309,6 +3721,23 @@
                             },
                             "additionalProperties": {
                               "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "p_display": {
+                        "description": "The chance as the engine writes it for showing: a whole percent (\"15%\"), \"<1%\" below 0.005, \">99%\" from 0.995. For choice, a map of option to that text. Show this rather than rounding p; a profile's says quotes it. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
                             }
                           }
                         ]
@@ -3536,7 +3965,7 @@
                   "additionalProperties": {}
                 },
                 "verdicts_withheld": {
-                  "description": "On a paged answer whose Verdicts are too large to share a page with the cases (reason too_large_for_one_response), or on an ask with response_format concise (reason response_format_concise): the Verdicts are unchanged in the full answer at page.answer_url.",
+                  "description": "On a paged answer whose Verdicts are too large to share a page with the cases (reason too_large_for_one_response), or with response_format concise or compact (reason response_format_concise or response_format_compact): the Verdicts are unchanged in the full answer at page.answer_url.",
                   "type": "object",
                   "properties": {
                     "count": {
@@ -3643,7 +4072,7 @@
             }
           },
           "upload": {
-            "description": "Return an upload page (for a person) and a presigned PUT URL (for a program) for a large CSV, instead of sending bytes here.",
+            "description": "Return an upload page (for a person), a pieces URL on api.datagoat.io and a presigned PUT URL (for a program) for a large file, instead of sending bytes here.",
             "type": "boolean",
             "const": true
           },
@@ -3713,6 +4142,10 @@
             "type": "integer",
             "minimum": -9007199254740991,
             "maximum": 9007199254740991
+          },
+          "upload_pieces_url": {
+            "description": "upload: true only. The file's pieces go here on api.datagoat.io: POST each piece (at most 4,000,000 bytes, with an x-upload-session header of 32 hex characters, the same on every piece) to <upload_pieces_url>/<index> in order from 0, then POST {\"pieces\": n} to <upload_pieces_url>/complete. The link is the credential for this one dataset and lasts as long as upload_page.",
+            "type": "string"
           }
         },
         "required": [
@@ -3729,6 +4162,14 @@
           "task_id": {
             "type": "string",
             "pattern": "^tk_[0-9a-z]{20,40}$"
+          },
+          "response_format": {
+            "description": "full (default) or compact: the same answers with each case as entity_id, p, p_display and, when the answer has them, band, level and says (a case with no chance keeps state and not_scoreable, a declined case refused and refused_reason, a choice case choice); the Verdicts are left out as with concise, and the whole answer stays at page.answer_url for 24 hours.",
+            "type": "string",
+            "enum": [
+              "full",
+              "compact"
+            ]
           }
         },
         "required": [
@@ -3761,7 +4202,8 @@
             "enum": [
               "reading_data",
               "reading_shape",
-              "asking"
+              "asking",
+              "backtesting"
             ]
           },
           "elapsed_ms": {
@@ -3877,16 +4319,60 @@
             "type": "string"
           },
           "record": {
-            "type": "object",
-            "properties": {
-              "content_hash": {
-                "type": "string"
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "content_hash": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "content_hash"
+                ],
+                "additionalProperties": {}
+              },
+              {
+                "description": "The record walked over: its outcome, horizon, cadence and as_of.",
+                "type": "object",
+                "properties": {
+                  "outcome_column": {
+                    "type": "string"
+                  },
+                  "horizon": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "unit": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "value",
+                      "unit"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  "snapshot_every": {
+                    "type": "string"
+                  },
+                  "as_of": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome_column",
+                  "horizon",
+                  "snapshot_every",
+                  "as_of"
+                ],
+                "additionalProperties": {}
               }
-            },
-            "required": [
-              "content_hash"
-            ],
-            "additionalProperties": {}
+            ]
           },
           "answers": {
             "type": "object",
@@ -3979,7 +4465,7 @@
                   ]
                 },
                 "quality": {
-                  "description": "How the model was measured: realised_lift, top_decile_lift, validation_scheme, confidence_tier, and held_out {whole_cases_by} when every row of one case was held out together (the accuracy is on cases the model never saw).",
+                  "description": "How the model was measured: realised_lift, top_decile_lift, validation_scheme, confidence_tier, and held_out {whole_cases_by} when every row of one case was held out together (the accuracy is on cases the model never saw), and record {labelled_rows, labelled_entities, positives_entities, open_rows} when the outcome is blank on some rows (not known yet): the fit read the labelled rows only, and those counts are what it was measured on.",
                   "type": "object",
                   "propertyNames": {
                     "type": "string"
@@ -4112,6 +4598,23 @@
                             },
                             "additionalProperties": {
                               "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "p_display": {
+                        "description": "The chance as the engine writes it for showing: a whole percent (\"15%\"), \"<1%\" below 0.005, \">99%\" from 0.995. For choice, a map of option to that text. Show this rather than rounding p; a profile's says quotes it. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
                             }
                           }
                         ]
@@ -4356,6 +4859,23 @@
                             },
                             "additionalProperties": {
                               "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "p_display": {
+                        "description": "The chance as the engine writes it for showing: a whole percent (\"15%\"), \"<1%\" below 0.005, \">99%\" from 0.995. For choice, a map of option to that text. Show this rather than rounding p; a profile's says quotes it. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
                             }
                           }
                         ]
@@ -4658,7 +5178,7 @@
                   "additionalProperties": {}
                 },
                 "have": {
-                  "description": "not_yet, or a too_few_predictors refusal: what the record holds now.",
+                  "description": "not_yet, or a refusal: what the record holds now.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
@@ -4694,9 +5214,63 @@
                         "minimum": -9007199254740991,
                         "maximum": 9007199254740991
                       }
+                    },
+                    "arms_found": {
+                      "description": "refused or not_yet, when the engine's search counted them: how many candidate conditions (arms) it found across the record's columns. A pattern needs 4.",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
                     }
                   },
                   "additionalProperties": {}
+                },
+                "horizons_tried": {
+                  "description": "refused or not_yet, on a record read from a log (snapshots): every horizon this record's source has been read at (this one included; three at most per source), each with the state of this same question there. Facts only: the answer picks no horizon.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "horizon": {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "unit": {
+                            "type": "string",
+                            "const": "days"
+                          }
+                        },
+                        "required": [
+                          "value",
+                          "unit"
+                        ],
+                        "additionalProperties": {}
+                      },
+                      "label": {
+                        "description": "The outcome column the record was read with at that horizon, e.g. cancelled_next_30d.",
+                        "type": "string"
+                      },
+                      "state": {
+                        "description": "That record's answer to this same question: answered, refused or not_yet when it was asked, not_asked when the record was read at that horizon but this question was not asked of it.",
+                        "type": "string",
+                        "enum": [
+                          "answered",
+                          "refused",
+                          "not_yet",
+                          "not_asked"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "horizon",
+                      "label",
+                      "state"
+                    ],
+                    "additionalProperties": {}
+                  }
                 },
                 "excluded_columns": {
                   "description": "Columns of the record the model does not use as predictors, and why: restates_outcome (on its own it almost determines the outcome), identifier, time_key, excluded_by_caller (the profile's exclude), unusable (detail: all_missing, constant or too_sparse). fixed_by_caller (the profile's fixed) is still read by the model, and no lever is offered on it.",
@@ -4782,6 +5356,23 @@
                             },
                             "additionalProperties": {
                               "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "p_display": {
+                        "description": "The chance as the engine writes it for showing: a whole percent (\"15%\"), \"<1%\" below 0.005, \">99%\" from 0.995. For choice, a map of option to that text. Show this rather than rounding p; a profile's says quotes it. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
                             }
                           }
                         ]
@@ -5009,7 +5600,7 @@
                   "additionalProperties": {}
                 },
                 "verdicts_withheld": {
-                  "description": "On a paged answer whose Verdicts are too large to share a page with the cases (reason too_large_for_one_response), or on an ask with response_format concise (reason response_format_concise): the Verdicts are unchanged in the full answer at page.answer_url.",
+                  "description": "On a paged answer whose Verdicts are too large to share a page with the cases (reason too_large_for_one_response), or with response_format concise or compact (reason response_format_concise or response_format_compact): the Verdicts are unchanged in the full answer at page.answer_url.",
                   "type": "object",
                   "properties": {
                     "count": {
@@ -5070,6 +5661,540 @@
           "namespace": {
             "description": "The namespace the call ran in, when it named one or its model_refs belong to one.",
             "type": "string"
+          },
+          "backtest_id": {
+            "description": "The same record, cutoffs and baseline name the same backtest.",
+            "type": "string"
+          },
+          "cutoffs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "description": "The cutoff: a point of the record's grid whose horizon had passed by as_of.",
+                  "type": "string"
+                },
+                "train": {
+                  "description": "What was known at the cutoff: the readings whose outcome had closed by then.",
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "entities": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives_entities": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "rows",
+                    "entities",
+                    "positives_entities"
+                  ],
+                  "additionalProperties": {}
+                },
+                "scored": {
+                  "description": "The cases alive at the cutoff that were graded, and how many had the outcome within the horizon after it.",
+                  "type": "object",
+                  "properties": {
+                    "entities": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "entities",
+                    "positives"
+                  ],
+                  "additionalProperties": {}
+                },
+                "state": {
+                  "description": "Known values: graded, not_yet, refused; others may be added.",
+                  "type": "string"
+                },
+                "reasons": {
+                  "description": "not_yet and refused: the fit's own reasons, as an ask would give them. A graded window with no positives: no_positives_in_window.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "graded": {
+                  "type": "object",
+                  "properties": {
+                    "capture": {
+                      "description": "Capture at the top 10% and 20% of cases by chance: the share of the window's positives among the top k cases.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "top": {
+                            "type": "number"
+                          },
+                          "k": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "value": {
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "top",
+                          "k",
+                          "value"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    },
+                    "lift": {
+                      "description": "The outcome's rate among the top 10% and 20% of cases by chance, against its rate across the window, under the engine's tie convention.",
+                      "type": "object",
+                      "properties": {
+                        "top10": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "top20": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "top10",
+                        "top20"
+                      ],
+                      "additionalProperties": {}
+                    },
+                    "calibration": {
+                      "description": "Ten bins of cases by chance: the mean chance given and the rate observed.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bin": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "mean_p": {
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "observed": {
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "bin",
+                          "count",
+                          "mean_p",
+                          "observed"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    }
+                  },
+                  "required": [
+                    "capture",
+                    "lift",
+                    "calibration"
+                  ],
+                  "additionalProperties": {}
+                },
+                "baseline": {
+                  "description": "The naive rule on this cutoff: one column, ranked in one direction, graded on the same cases (capture and lift only).",
+                  "type": "object",
+                  "properties": {
+                    "column": {
+                      "type": "string"
+                    },
+                    "direction": {
+                      "description": "Known values: higher, lower; others may be added.",
+                      "type": "string"
+                    },
+                    "graded": {
+                      "type": "object",
+                      "properties": {
+                        "capture": {
+                          "description": "Capture at the top 10% and 20% of cases by chance: the share of the window's positives among the top k cases.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "top": {
+                                "type": "number"
+                              },
+                              "k": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "number"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "top",
+                              "k",
+                              "value"
+                            ],
+                            "additionalProperties": {}
+                          }
+                        },
+                        "lift": {
+                          "type": "object",
+                          "properties": {
+                            "top10": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "top20": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "top10",
+                            "top20"
+                          ],
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "capture",
+                        "lift"
+                      ],
+                      "additionalProperties": {}
+                    }
+                  },
+                  "required": [
+                    "column",
+                    "direction",
+                    "graded"
+                  ],
+                  "additionalProperties": {}
+                }
+              },
+              "required": [
+                "at",
+                "train",
+                "scored",
+                "state"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "summary": {
+            "description": "Positives-weighted means over the graded cutoffs; nothing is pooled across windows. not_yet and refused cutoffs are counted, not averaged.",
+            "type": "object",
+            "properties": {
+              "cutoffs": {
+                "type": "object",
+                "properties": {
+                  "graded": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "not_yet": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "refused": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "graded",
+                  "not_yet",
+                  "refused"
+                ],
+                "additionalProperties": {}
+              },
+              "capture": {
+                "type": "object",
+                "properties": {
+                  "top10": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "top20": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "top10",
+                  "top20"
+                ],
+                "additionalProperties": {}
+              },
+              "lift": {
+                "type": "object",
+                "properties": {
+                  "top10": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "top20": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "top10",
+                  "top20"
+                ],
+                "additionalProperties": {}
+              },
+              "baseline": {
+                "type": "object",
+                "properties": {
+                  "capture": {
+                    "type": "object",
+                    "properties": {
+                      "top10": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "top20": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "top10",
+                      "top20"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  "lift": {
+                    "type": "object",
+                    "properties": {
+                      "top10": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "top20": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "top10",
+                      "top20"
+                    ],
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "capture",
+                  "lift"
+                ],
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "cutoffs",
+              "capture",
+              "lift"
+            ],
+            "additionalProperties": {}
+          },
+          "decision": {
+            "description": "supported: at least 3 cutoffs graded with positives, summary lift.top10 at or above the engine's lift bar and above the baseline's. not_yet: fewer than 3 graded. not_supported: otherwise.",
+            "type": "string"
+          },
+          "verdict": {
+            "description": "The signed Verdict (kind backtest), exactly as the engine signed it; dg_verify checks it.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "verdicts_withheld": {
+            "description": "With response_format concise: the Verdict is left out of this response; it is unchanged in the whole result at page.answer_url.",
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "count",
+              "reason"
+            ],
+            "additionalProperties": {}
+          },
+          "next": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "operation": {
+                  "type": "string"
+                },
+                "with": {
+                  "type": "string"
+                },
+                "cost": {
+                  "type": "string"
+                },
+                "gives": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "operation",
+                "cost",
+                "gives"
+              ],
+              "additionalProperties": {}
+            }
           }
         },
         "required": [
@@ -5353,7 +6478,38 @@
             "type": "string"
           },
           "recommendation": {
-            "description": "keep: the refit found the same pattern, renew with dg_extend_model. refit: switch to the new model_ref. abandon: stop asking. no_check_yet: nothing has been compared (pattern no_prior), so it is no reason to renew.",
+            "description": "keep: go on using keep_model_ref (the earlier model: the pattern held, or the refit measured worse) and renew it with dg_extend_model. refit: switch to the new model_ref (keep_model_ref names it). abandon: stop asking. no_check_yet: nothing has been compared (pattern no_prior), so it is no reason to renew.",
+            "type": "string"
+          },
+          "refit_quality": {
+            "description": "The refit's held-out lift against the earlier model's: worse below 0.7 times it, better above 1.3 times, similar between. not_comparable when either fit's held-out part had under 20 positives, or the earlier model has expired or was deleted. The engine's comparison; Datagoat computes none.",
+            "type": "string"
+          },
+          "keep_model_ref": {
+            "description": "The model to go on using: the earlier model on keep, the new one on refit, null on abandon and when the model to keep has expired or was deleted, so it names no model that can no longer answer.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note_code": {
+            "description": "Why, when there is a reason to say: refit_worse (keep, because the refit measured worse) or prior_unusable (refit, because the earlier model expired or was deleted, so nothing could be compared).",
+            "anyOf": [
+              {
+                "description": "Known values: refit_worse, prior_unusable; others may be added.",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "description": "One sentence for note_code, or for no_check_yet, written by Datagoat. Absent when there is nothing to add.",
             "type": "string"
           },
           "watch_url": {
@@ -5440,6 +6596,60 @@
               "propertyNames": {
                 "type": "string"
               },
+              "additionalProperties": {}
+            }
+          },
+          "schedules": {
+            "description": "With a key: the workspace's schedules (dg_schedule), each with its state, next run and last run.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "schedule_id": {
+                  "type": "string"
+                },
+                "mapping_id": {
+                  "type": "string"
+                },
+                "cadence": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "next_run_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "last_run": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "schedule_id",
+                "mapping_id",
+                "cadence",
+                "state",
+                "next_run_at",
+                "last_run"
+              ],
               "additionalProperties": {}
             }
           }
@@ -5547,7 +6757,15 @@
             "type": "boolean"
           },
           "dose_fraction": {
-            "type": "number"
+            "description": "How far the case moved toward the lever's target: 1 reached it, above 1 went past it, between 0 and 1 partway, below 0 moved away. Not clipped. Absent or null when it cannot be measured (for example post_value null).",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "evaluated_feature": {
             "type": "string"
@@ -5577,7 +6795,6 @@
         },
         "required": [
           "compliant",
-          "dose_fraction",
           "evaluated_feature",
           "evaluated_direction",
           "event_id",
@@ -6019,6 +7236,14 @@
             "type": "string",
             "minLength": 10,
             "maxLength": 2048
+          },
+          "response_format": {
+            "description": "full (default) or compact: the same answers with each case as entity_id, p, p_display and, when the answer has them, band, level and says (a case with no chance keeps state and not_scoreable, a declined case refused and refused_reason, a choice case choice); the Verdicts are left out as with concise, and the whole answer stays at page.answer_url for 24 hours.",
+            "type": "string",
+            "enum": [
+              "full",
+              "compact"
+            ]
           }
         },
         "required": [
@@ -6124,7 +7349,7 @@
                   ]
                 },
                 "quality": {
-                  "description": "How the model was measured: realised_lift, top_decile_lift, validation_scheme, confidence_tier, and held_out {whole_cases_by} when every row of one case was held out together (the accuracy is on cases the model never saw).",
+                  "description": "How the model was measured: realised_lift, top_decile_lift, validation_scheme, confidence_tier, and held_out {whole_cases_by} when every row of one case was held out together (the accuracy is on cases the model never saw), and record {labelled_rows, labelled_entities, positives_entities, open_rows} when the outcome is blank on some rows (not known yet): the fit read the labelled rows only, and those counts are what it was measured on.",
                   "type": "object",
                   "propertyNames": {
                     "type": "string"
@@ -6257,6 +7482,23 @@
                             },
                             "additionalProperties": {
                               "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "p_display": {
+                        "description": "The chance as the engine writes it for showing: a whole percent (\"15%\"), \"<1%\" below 0.005, \">99%\" from 0.995. For choice, a map of option to that text. Show this rather than rounding p; a profile's says quotes it. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
                             }
                           }
                         ]
@@ -6501,6 +7743,23 @@
                             },
                             "additionalProperties": {
                               "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "p_display": {
+                        "description": "The chance as the engine writes it for showing: a whole percent (\"15%\"), \"<1%\" below 0.005, \">99%\" from 0.995. For choice, a map of option to that text. Show this rather than rounding p; a profile's says quotes it. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
                             }
                           }
                         ]
@@ -6803,7 +8062,7 @@
                   "additionalProperties": {}
                 },
                 "have": {
-                  "description": "not_yet, or a too_few_predictors refusal: what the record holds now.",
+                  "description": "not_yet, or a refusal: what the record holds now.",
                   "type": "object",
                   "properties": {
                     "labeled_rows": {
@@ -6839,9 +8098,63 @@
                         "minimum": -9007199254740991,
                         "maximum": 9007199254740991
                       }
+                    },
+                    "arms_found": {
+                      "description": "refused or not_yet, when the engine's search counted them: how many candidate conditions (arms) it found across the record's columns. A pattern needs 4.",
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
                     }
                   },
                   "additionalProperties": {}
+                },
+                "horizons_tried": {
+                  "description": "refused or not_yet, on a record read from a log (snapshots): every horizon this record's source has been read at (this one included; three at most per source), each with the state of this same question there. Facts only: the answer picks no horizon.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "horizon": {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "unit": {
+                            "type": "string",
+                            "const": "days"
+                          }
+                        },
+                        "required": [
+                          "value",
+                          "unit"
+                        ],
+                        "additionalProperties": {}
+                      },
+                      "label": {
+                        "description": "The outcome column the record was read with at that horizon, e.g. cancelled_next_30d.",
+                        "type": "string"
+                      },
+                      "state": {
+                        "description": "That record's answer to this same question: answered, refused or not_yet when it was asked, not_asked when the record was read at that horizon but this question was not asked of it.",
+                        "type": "string",
+                        "enum": [
+                          "answered",
+                          "refused",
+                          "not_yet",
+                          "not_asked"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "horizon",
+                      "label",
+                      "state"
+                    ],
+                    "additionalProperties": {}
+                  }
                 },
                 "excluded_columns": {
                   "description": "Columns of the record the model does not use as predictors, and why: restates_outcome (on its own it almost determines the outcome), identifier, time_key, excluded_by_caller (the profile's exclude), unusable (detail: all_missing, constant or too_sparse). fixed_by_caller (the profile's fixed) is still read by the model, and no lever is offered on it.",
@@ -6927,6 +8240,23 @@
                             },
                             "additionalProperties": {
                               "type": "number"
+                            }
+                          }
+                        ]
+                      },
+                      "p_display": {
+                        "description": "The chance as the engine writes it for showing: a whole percent (\"15%\"), \"<1%\" below 0.005, \">99%\" from 0.995. For choice, a map of option to that text. Show this rather than rounding p; a profile's says quotes it. Absent on a not_scoreable case.",
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
                             }
                           }
                         ]
@@ -7154,7 +8484,7 @@
                   "additionalProperties": {}
                 },
                 "verdicts_withheld": {
-                  "description": "On a paged answer whose Verdicts are too large to share a page with the cases (reason too_large_for_one_response), or on an ask with response_format concise (reason response_format_concise): the Verdicts are unchanged in the full answer at page.answer_url.",
+                  "description": "On a paged answer whose Verdicts are too large to share a page with the cases (reason too_large_for_one_response), or with response_format concise or compact (reason response_format_concise or response_format_compact): the Verdicts are unchanged in the full answer at page.answer_url.",
                   "type": "object",
                   "properties": {
                     "count": {
@@ -7241,7 +8571,7 @@
                 "maxLength": 3000000
               },
               "fetch_url": {
-                "description": "A public https URL Datagoat downloads the CSV from. No redirects; private and internal hosts are refused.",
+                "description": "A public https URL Datagoat downloads the file from: a CSV, a gzip-compressed CSV or a Parquet file (read by the engine). No redirects; private and internal hosts are refused.",
                 "type": "string",
                 "format": "uri"
               },
@@ -7324,8 +8654,44 @@
                   }
                 },
                 "why_not": {
-                  "description": "When worth_asking is false: too_few_patterns, or the engine's reason.",
+                  "description": "When worth_asking is false: too_few_patterns, or the engine's reason. The engine's code for it is code.",
                   "type": "string"
+                },
+                "code": {
+                  "description": "When worth_asking is false: the engine gate's code for the candidate: constant_outcome, missingness_as_outcome, prevalence_out_of_band, no_separating_signal or leakage_suspect when the gate rejects or flags it; too_few_patterns (more columns could help) or too_few_positives (more cases could help) when the gate passes and the screen does not; null when no code applies (why_not says why). Absent when the engine could not read the outcome.",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "facts": {
+                  "description": "With code: what the gate measured, from the engine: rows read, positives among them, and their share (prevalence).",
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "prevalence": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "rows",
+                    "positives",
+                    "prevalence"
+                  ],
+                  "additionalProperties": {}
                 },
                 "next_step": {
                   "description": "With defined_by: those columns restate the outcome, and dropping them or excluding them with a profile leaves the question to the other columns. With too_few_patterns: what could make the question answerable (more columns, or an activity log read with the events or snapshots shape).",
@@ -7458,6 +8824,1737 @@
         },
         "required": [
           "model_ref",
+          "deleted"
+        ],
+        "additionalProperties": {}
+      },
+      "dg_map_input": {
+        "type": "object",
+        "properties": {
+          "sources": {
+            "description": "What the record is made from: one table, or one or two event logs with at most one table (joined onto the logs by the case's id). Required except on a replay by mapping_id.",
+            "minItems": 1,
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "dataset_id": {
+                  "description": "A dataset from dg_add_dataset (ds_…), or a free sample (sample:…).",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "fetch_url": {
+                  "description": "A public https URL Datagoat downloads the CSV from, stored as a dataset first (as dg_add_dataset does). A mapping over fetch_url sources is refetched on every replay.",
+                  "type": "string",
+                  "format": "uri"
+                },
+                "fetch_headers": {
+                  "description": "Headers to send with fetch_url, e.g. an Authorization header for a private object. A confirmed mapping keeps them encrypted, for its replays; no output shows them.",
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "label": {
+                  "description": "The source's name in the proposal, the answers and the record's event types (<label>_<type>). Default: the dataset's filename without its extension (a sample's id after sample:). Required when two sources would share one.",
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "snapshot_every": {
+            "description": "How often each case is read from the logs: 1d, 1w (default) or 4w (28 days).",
+            "type": "string",
+            "enum": [
+              "1d",
+              "1w",
+              "4w"
+            ]
+          },
+          "horizon": {
+            "description": "How far ahead the outcome is looked for from each reading: 1, 7, 30 (default), 60 or 90 days. A record is read at three horizons at most.",
+            "type": "object",
+            "properties": {
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "const": 1
+                  },
+                  {
+                    "type": "number",
+                    "const": 7
+                  },
+                  {
+                    "type": "number",
+                    "const": 30
+                  },
+                  {
+                    "type": "number",
+                    "const": 60
+                  },
+                  {
+                    "type": "number",
+                    "const": 90
+                  }
+                ]
+              },
+              "unit": {
+                "type": "string",
+                "const": "days"
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "additionalProperties": false
+          },
+          "outcome_words": {
+            "description": "Words for the outcome in the user's terms (e.g. [\"cancel\"]): an outcome offer they name, when it is the only one, is the only one proposed.",
+            "minItems": 1,
+            "maxItems": 8,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "as_of": {
+            "description": "The moment the record is read at, ISO-8601. Default: the latest time in the logs.",
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}([T ]\\d{2}:\\d{2}(:\\d{2}(\\.\\d{1,9})?)?(Z|[+-]\\d{2}:?\\d{2})?)?$"
+          },
+          "answers": {
+            "description": "With answers, the proposal is confirmed: every question needs its answer, and a slot with one survivor takes it (an empty object answers nothing and takes every single survivor).",
+            "type": "object",
+            "properties": {
+              "entity": {
+                "description": "Per source, the column naming each case.",
+                "minItems": 1,
+                "maxItems": 3,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "description": "The source's label.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "column": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "column"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "time_column": {
+                "description": "Per source, the time column (a table's is optional, and never a question).",
+                "minItems": 1,
+                "maxItems": 3,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "description": "The source's label.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "column": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "column"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "outcome": {
+                "description": "The outcome: one of outcomes.offers[].offer_id.",
+                "type": "object",
+                "properties": {
+                  "offer_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "offer_id"
+                ],
+                "additionalProperties": false
+              },
+              "join": {
+                "type": "object",
+                "properties": {
+                  "table": {
+                    "description": "The table's label.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "right_key": {
+                    "description": "The table's column holding the case's id (the left key is always the entity).",
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "table",
+                  "right_key"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "mapping_id": {
+            "description": "Replays a confirmed mapping: fetch_url sources are fetched again and the record rebuilt; dataset_id sources return the record while it is kept. With different answers, snapshot_every, horizon or as_of, a new mapping on the stored answers with the slots sent replacing theirs (outcome_words change nothing once the answers are stored).",
+            "type": "string",
+            "pattern": "^mp_[0-9a-z_]{5,60}$"
+          },
+          "closed_since": {
+            "description": "On a replay: also return closed[], the readings whose outcome became known after this moment.",
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}([T ]\\d{2}:\\d{2}(:\\d{2}(\\.\\d{1,9})?)?(Z|[+-]\\d{2}:?\\d{2})?)?$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "dg_map_output": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "description": "proposed: sources, outcomes and questions, nothing stored. confirmed: the record, its mapping_id and a ready-to-run ask. not_runnable: the chosen outcome did not pass its gate at this horizon (no mapping is made). empty: a slot has nothing that passes (empty_reason).",
+            "type": "string",
+            "enum": [
+              "proposed",
+              "confirmed",
+              "not_runnable",
+              "empty"
+            ]
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "dataset_id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "rows": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "grain": {
+                  "description": "Whether the source is a table (one row per case) or a log (many timed rows per case), and why.",
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "description": "Known values: table, log; others may be added.",
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "reason"
+                  ],
+                  "additionalProperties": {}
+                },
+                "entity": {
+                  "description": "The columns that could name each case, each with its gate's verdict and code; multiplicity counts those that passed.",
+                  "type": "object",
+                  "properties": {
+                    "candidates": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "column": {
+                            "type": "string"
+                          },
+                          "verdict": {
+                            "description": "Known values: passed, failed; others may be added.",
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "column",
+                          "verdict",
+                          "code"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    },
+                    "multiplicity": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "candidates",
+                    "multiplicity"
+                  ],
+                  "additionalProperties": {}
+                },
+                "time_column": {
+                  "type": "object",
+                  "properties": {
+                    "candidates": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "column": {
+                            "type": "string"
+                          },
+                          "samples": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "column"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    },
+                    "multiplicity": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "candidates",
+                    "multiplicity"
+                  ],
+                  "additionalProperties": {}
+                },
+                "resolutions": {
+                  "description": "A table's columns as preflight reads them: what each column's values are, and whether it may be a predictor.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "columns_omitted": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "blocking": {
+                  "description": "A single table: preflight's blocking entries, as sentences. Each means an answer from this table would not be believable until it is fixed.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "excluded_columns": {
+                  "description": "Columns that are not predictors, and why: identifier, restates_outcome (on its own it almost determines the outcome), as_of_export (a number, flag or text in a table, which may have changed between the export and each reading).",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "column": {
+                        "type": "string"
+                      },
+                      "why": {
+                        "description": "Known values: restates_outcome, identifier, time_key, excluded_by_caller, fixed_by_caller, unusable; others may be added.",
+                        "type": "string"
+                      },
+                      "detail": {
+                        "description": "unusable only: all_missing, constant or too_sparse.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "column",
+                      "why"
+                    ],
+                    "additionalProperties": {}
+                  }
+                }
+              },
+              "required": [
+                "dataset_id",
+                "label"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "outcomes": {
+            "description": "The outcomes the sources could be asked about, each with the gate's code; multiplicity counts those that passed.",
+            "type": "object",
+            "properties": {
+              "offers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "offer_id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "description": "Known values: column, event_type, outcome_time, lapsed; others may be added.",
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    },
+                    "why": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "offer_id",
+                    "kind",
+                    "code",
+                    "why"
+                  ],
+                  "additionalProperties": {}
+                }
+              },
+              "multiplicity": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "offers",
+              "multiplicity"
+            ],
+            "additionalProperties": {}
+          },
+          "join": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "table": {
+                    "type": "string"
+                  },
+                  "key_candidates": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "right_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "right_key"
+                      ],
+                      "additionalProperties": {}
+                    }
+                  },
+                  "multiplicity": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "table",
+                  "key_candidates",
+                  "multiplicity"
+                ],
+                "additionalProperties": {}
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "questions": {
+            "description": "One per slot where two or more candidates survive, in the order entity, time_column, join, outcome. The answer is the user's: each option is as the proposal lists it.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "slot": {
+                  "description": "Known values: entity, time_column, join, outcome; others may be added.",
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "options": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "why": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "slot",
+                "options",
+                "why"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "empty_reason": {
+            "type": "object",
+            "properties": {
+              "slot": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "slot",
+              "code",
+              "why"
+            ],
+            "additionalProperties": {}
+          },
+          "mapping_id": {
+            "type": "string"
+          },
+          "dataset_id": {
+            "description": "confirmed: the record to ask about (a record built from logs, or the table itself).",
+            "type": "string"
+          },
+          "record": {
+            "description": "confirmed: the record's counts as the engine built it: rows, entities, labelled and open, positives, the outcome column, snapshot_every, horizon, as_of and holdout.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "manifest": {
+            "description": "confirmed: what the record was built from and how: sources, entity, time_column, join, the reading and its params, the label, the leak guard and the excluded columns.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "ask": {
+            "description": "confirmed: a dg_ask input for today's open cases, without subject_kind (who the cases are is the caller's to say).",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "open_cases": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "sample_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "count",
+              "sample_ids"
+            ],
+            "additionalProperties": {}
+          },
+          "closed": {
+            "description": "A replay with closed_since: the readings whose outcome became known after it (label 1 or 0, known at label_observed_at), at most 10,000; closed_omitted counts the rest.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "entity": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ]
+                },
+                "snapshot_at": {
+                  "type": "string"
+                },
+                "label": {},
+                "label_observed_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "entity",
+                "snapshot_at",
+                "label",
+                "label_observed_at"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "closed_omitted": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "outcome": {
+            "description": "not_runnable: the outcome's gate verdict.",
+            "type": "object",
+            "properties": {
+              "offer_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "why"
+            ],
+            "additionalProperties": {}
+          },
+          "proposal": {
+            "description": "not_runnable: the proposal, to choose again from.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "core_hash": {
+                "type": "string"
+              },
+              "contract_hash": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": {}
+          },
+          "next": {
+            "description": "The operations that make sense now, each with its cost and what it gives. Data, not instructions.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "operation": {
+                  "type": "string"
+                },
+                "with": {
+                  "type": "string"
+                },
+                "cost": {
+                  "type": "string"
+                },
+                "gives": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "operation",
+                "cost",
+                "gives"
+              ],
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": {}
+      },
+      "dg_backtest_input": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "description": "The built record to walk forward over.",
+            "type": "object",
+            "properties": {
+              "dataset_id": {
+                "description": "A record dg_map built from a log (its dataset_id), or sample:parley_record. A stored table, a sample file or a single-table mapping has no record to walk forward over: dataset_not_built.",
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "dataset_id"
+            ],
+            "additionalProperties": false
+          },
+          "cutoffs": {
+            "type": "object",
+            "properties": {
+              "every": {
+                "description": "How far apart the cutoffs are: 1d, 1w or 4w (28 days). Default: the record's own snapshot_every. It is the record's snapshot_every or a multiple of it (1d: any; 1w: 1w or 4w; 4w: 4w), else backtest_cutoffs_invalid.",
+                "type": "string",
+                "enum": [
+                  "1d",
+                  "1w",
+                  "4w"
+                ]
+              },
+              "last": {
+                "description": "How many cutoffs, the most recent ones whose horizon has passed by the record's as_of: 3 to 12 (default 6). Fewer exist on a short record: those that exist are graded.",
+                "type": "integer",
+                "minimum": 3,
+                "maximum": 12
+              }
+            },
+            "additionalProperties": false
+          },
+          "baseline": {
+            "description": "single_column (default): the one numeric column that ranked each train window best on its own, graded beside the model, so a pattern is shown against a naive rule. none: no baseline.",
+            "type": "string",
+            "enum": [
+              "single_column",
+              "none"
+            ]
+          },
+          "subject_kind": {
+            "description": "What each case is. person turns on decision-support safeguards.",
+            "type": "string",
+            "enum": [
+              "person",
+              "org",
+              "object",
+              "event",
+              "other"
+            ]
+          },
+          "acknowledge_decision_support": {
+            "description": "Required true when subject_kind is person: results are decision support, with a human in the loop.",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "A retry with the same key returns the first call's answer without fitting or billing again (keys are kept 24 hours).",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "response_format": {
+            "description": "full (default): with the signed Verdict. concise: without it (verdicts_withheld says so); the whole result, Verdict included, stays at page.answer_url for 24 hours. Everything else is the same.",
+            "type": "string",
+            "enum": [
+              "full",
+              "concise"
+            ]
+          }
+        },
+        "required": [
+          "data",
+          "subject_kind"
+        ],
+        "additionalProperties": false
+      },
+      "dg_backtest_output": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "description": "pending: the first fit on a large record is still running; dg_poll with task_id returns the result.",
+            "type": "string",
+            "enum": [
+              "done",
+              "pending"
+            ]
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "stage": {
+            "description": "pending only: how far the task has got.",
+            "type": "string",
+            "enum": [
+              "reading_data",
+              "backtesting"
+            ]
+          },
+          "elapsed_ms": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "progress": {
+            "description": "pending only, while the engine is walking forward: its stage and cutoff i of K; no number about any cutoff until the result.",
+            "type": "object",
+            "properties": {
+              "stage": {
+                "description": "The engine's stage: loading, cutoff or grading.",
+                "type": "string"
+              },
+              "frac": {
+                "type": "number"
+              },
+              "fit": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "of": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "additionalProperties": {}
+          },
+          "watch_url": {
+            "description": "pending only: a page that shows this task's stages live and then the backtest, for anyone holding the link. Valid while the result is kept, 24 hours.",
+            "type": "string"
+          },
+          "page": {
+            "type": "object",
+            "properties": {
+              "answer_url": {
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer_url",
+              "expires_at"
+            ],
+            "additionalProperties": {}
+          },
+          "dataset_id": {
+            "type": "string"
+          },
+          "record": {
+            "description": "The record walked over: its outcome, horizon, cadence and as_of.",
+            "type": "object",
+            "properties": {
+              "outcome_column": {
+                "type": "string"
+              },
+              "horizon": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "unit": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value",
+                  "unit"
+                ],
+                "additionalProperties": {}
+              },
+              "snapshot_every": {
+                "type": "string"
+              },
+              "as_of": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome_column",
+              "horizon",
+              "snapshot_every",
+              "as_of"
+            ],
+            "additionalProperties": {}
+          },
+          "backtest_id": {
+            "description": "The same record, cutoffs and baseline name the same backtest.",
+            "type": "string"
+          },
+          "cutoffs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "description": "The cutoff: a point of the record's grid whose horizon had passed by as_of.",
+                  "type": "string"
+                },
+                "train": {
+                  "description": "What was known at the cutoff: the readings whose outcome had closed by then.",
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "entities": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives_entities": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "rows",
+                    "entities",
+                    "positives_entities"
+                  ],
+                  "additionalProperties": {}
+                },
+                "scored": {
+                  "description": "The cases alive at the cutoff that were graded, and how many had the outcome within the horizon after it.",
+                  "type": "object",
+                  "properties": {
+                    "entities": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "positives": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "entities",
+                    "positives"
+                  ],
+                  "additionalProperties": {}
+                },
+                "state": {
+                  "description": "Known values: graded, not_yet, refused; others may be added.",
+                  "type": "string"
+                },
+                "reasons": {
+                  "description": "not_yet and refused: the fit's own reasons, as an ask would give them. A graded window with no positives: no_positives_in_window.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "graded": {
+                  "type": "object",
+                  "properties": {
+                    "capture": {
+                      "description": "Capture at the top 10% and 20% of cases by chance: the share of the window's positives among the top k cases.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "top": {
+                            "type": "number"
+                          },
+                          "k": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "value": {
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "top",
+                          "k",
+                          "value"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    },
+                    "lift": {
+                      "description": "The outcome's rate among the top 10% and 20% of cases by chance, against its rate across the window, under the engine's tie convention.",
+                      "type": "object",
+                      "properties": {
+                        "top10": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "top20": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "top10",
+                        "top20"
+                      ],
+                      "additionalProperties": {}
+                    },
+                    "calibration": {
+                      "description": "Ten bins of cases by chance: the mean chance given and the rate observed.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bin": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "mean_p": {
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "observed": {
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "bin",
+                          "count",
+                          "mean_p",
+                          "observed"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    }
+                  },
+                  "required": [
+                    "capture",
+                    "lift",
+                    "calibration"
+                  ],
+                  "additionalProperties": {}
+                },
+                "baseline": {
+                  "description": "The naive rule on this cutoff: one column, ranked in one direction, graded on the same cases (capture and lift only).",
+                  "type": "object",
+                  "properties": {
+                    "column": {
+                      "type": "string"
+                    },
+                    "direction": {
+                      "description": "Known values: higher, lower; others may be added.",
+                      "type": "string"
+                    },
+                    "graded": {
+                      "type": "object",
+                      "properties": {
+                        "capture": {
+                          "description": "Capture at the top 10% and 20% of cases by chance: the share of the window's positives among the top k cases.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "top": {
+                                "type": "number"
+                              },
+                              "k": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "number"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "top",
+                              "k",
+                              "value"
+                            ],
+                            "additionalProperties": {}
+                          }
+                        },
+                        "lift": {
+                          "type": "object",
+                          "properties": {
+                            "top10": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "top20": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "top10",
+                            "top20"
+                          ],
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "capture",
+                        "lift"
+                      ],
+                      "additionalProperties": {}
+                    }
+                  },
+                  "required": [
+                    "column",
+                    "direction",
+                    "graded"
+                  ],
+                  "additionalProperties": {}
+                }
+              },
+              "required": [
+                "at",
+                "train",
+                "scored",
+                "state"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "summary": {
+            "description": "Positives-weighted means over the graded cutoffs; nothing is pooled across windows. not_yet and refused cutoffs are counted, not averaged.",
+            "type": "object",
+            "properties": {
+              "cutoffs": {
+                "type": "object",
+                "properties": {
+                  "graded": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "not_yet": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "refused": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "graded",
+                  "not_yet",
+                  "refused"
+                ],
+                "additionalProperties": {}
+              },
+              "capture": {
+                "type": "object",
+                "properties": {
+                  "top10": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "top20": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "top10",
+                  "top20"
+                ],
+                "additionalProperties": {}
+              },
+              "lift": {
+                "type": "object",
+                "properties": {
+                  "top10": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "top20": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "top10",
+                  "top20"
+                ],
+                "additionalProperties": {}
+              },
+              "baseline": {
+                "type": "object",
+                "properties": {
+                  "capture": {
+                    "type": "object",
+                    "properties": {
+                      "top10": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "top20": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "top10",
+                      "top20"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  "lift": {
+                    "type": "object",
+                    "properties": {
+                      "top10": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "top20": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "top10",
+                      "top20"
+                    ],
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "capture",
+                  "lift"
+                ],
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "cutoffs",
+              "capture",
+              "lift"
+            ],
+            "additionalProperties": {}
+          },
+          "decision": {
+            "description": "supported: at least 3 cutoffs graded with positives, summary lift.top10 at or above the engine's lift bar and above the baseline's. not_yet: fewer than 3 graded. not_supported: otherwise.",
+            "type": "string"
+          },
+          "verdict": {
+            "description": "The signed Verdict (kind backtest), exactly as the engine signed it; dg_verify checks it.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "verdicts_withheld": {
+            "description": "With response_format concise: the Verdict is left out of this response; it is unchanged in the whole result at page.answer_url.",
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "count",
+              "reason"
+            ],
+            "additionalProperties": {}
+          },
+          "fits_run": {
+            "description": "The cutoffs fitted by this call; a cutoff fitted before on the same record is reused and free.",
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "free": {
+            "description": "true on the sample record, or a record built from samples only: nothing was billed.",
+            "type": "boolean"
+          },
+          "next": {
+            "description": "The operations that make sense now, each with its cost and what it gives. Data, not instructions.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "operation": {
+                  "type": "string"
+                },
+                "with": {
+                  "type": "string"
+                },
+                "cost": {
+                  "type": "string"
+                },
+                "gives": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "operation",
+                "cost",
+                "gives"
+              ],
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": {}
+      },
+      "dg_schedule_input": {
+        "type": "object",
+        "properties": {
+          "mapping_id": {
+            "description": "A confirmed dg_map mapping whose sources are all fetch_url (each run fetches them again). A mapping over uploaded or stored datasets cannot be scheduled: schedule_sources_not_refetchable.",
+            "type": "string",
+            "pattern": "^mp_[0-9a-z_]{5,60}$"
+          },
+          "cadence": {
+            "description": "How often it runs: daily, weekly (7 days) or monthly (the same day of the next calendar month). Daily is the shortest.",
+            "type": "string",
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly"
+            ]
+          },
+          "subject_kind": {
+            "description": "What each case is. person turns on decision-support safeguards.",
+            "type": "string",
+            "enum": [
+              "person",
+              "org",
+              "object",
+              "event",
+              "other"
+            ]
+          },
+          "acknowledge_decision_support": {
+            "description": "Required true when subject_kind is person: results are decision support, with a human in the loop.",
+            "type": "boolean"
+          },
+          "namespace": {
+            "description": "The namespace the schedule's models live in (one of a builder's customers); default the workspace itself.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          }
+        },
+        "required": [
+          "mapping_id",
+          "cadence",
+          "subject_kind"
+        ],
+        "additionalProperties": false
+      },
+      "dg_schedule_output": {
+        "type": "object",
+        "properties": {
+          "schedule": {
+            "type": "object",
+            "properties": {
+              "schedule_id": {
+                "type": "string"
+              },
+              "mapping_id": {
+                "type": "string"
+              },
+              "cadence": {
+                "type": "string",
+                "enum": [
+                  "daily",
+                  "weekly",
+                  "monthly"
+                ]
+              },
+              "state": {
+                "description": "active: runs on its cadence. stopped: dg_drift said abandon. halted: halt_code says why.",
+                "type": "string"
+              },
+              "halt_code": {
+                "description": "halted only: the billing code (payment_required, payment_past_due, subscription_canceled), credential_revoked (the key it runs as was revoked) or source_unreachable (a source could not be fetched). A value on the schedule, not an error.",
+                "type": "string"
+              },
+              "next_run_at": {
+                "description": "When the next run is due (runs are dispatched hourly, at most 10 at a time).",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "model_ref": {
+                "description": "The model in use: the first run's fit, then whichever dg_drift says to keep.",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "last_run": {
+                "anyOf": [
+                  {
+                    "description": "The latest run.",
+                    "type": "object",
+                    "properties": {
+                      "run_id": {
+                        "description": "The run's task id: its watch page reads it.",
+                        "type": "string"
+                      },
+                      "at": {
+                        "description": "When the run started.",
+                        "type": "string"
+                      },
+                      "state": {
+                        "description": "running: a step is under way (a step stopped mid-call is replayed at the next tick with the same idempotency_key). done: every step ran or was skipped. halted: the schedule stopped on halt_code. stopped: dg_drift said abandon.",
+                        "type": "string"
+                      },
+                      "step": {
+                        "description": "The step under way, or the last one that ran.",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "map",
+                              "fit",
+                              "drift",
+                              "score",
+                              "report"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "steps": {
+                        "description": "Each step's state: map (the mapping replayed: sources fetched again, the record rebuilt, closed_since the last run), fit (skipped when the closed-label frame is unchanged: no fit billed), drift, score (today's open cases), report (the outcomes that closed since the last run).",
+                        "type": "object",
+                        "properties": {
+                          "map": {
+                            "description": "Known values: pending, running, done, skipped, failed; others may be added.",
+                            "type": "string"
+                          },
+                          "fit": {
+                            "description": "Known values: pending, running, done, skipped, failed; others may be added.",
+                            "type": "string"
+                          },
+                          "drift": {
+                            "description": "Known values: pending, running, done, skipped, failed; others may be added.",
+                            "type": "string"
+                          },
+                          "score": {
+                            "description": "Known values: pending, running, done, skipped, failed; others may be added.",
+                            "type": "string"
+                          },
+                          "report": {
+                            "description": "Known values: pending, running, done, skipped, failed; others may be added.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "map",
+                          "fit",
+                          "drift",
+                          "score",
+                          "report"
+                        ],
+                        "additionalProperties": {}
+                      },
+                      "fits_run": {
+                        "description": "Fits this run billed (0 when the fit was skipped).",
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "decisions": {
+                        "description": "Answered cases this run billed.",
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "scored": {
+                        "description": "Open cases the score step answered about.",
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "reported": {
+                        "description": "Outcomes written by the report step; a replayed step writes 0 and counts them in duplicates.",
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "duplicates": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "drift": {
+                        "description": "dg_drift's reading of this run's refit against the model in use, as dg_drift gives it.",
+                        "type": "object",
+                        "properties": {
+                          "pattern": {
+                            "type": "string"
+                          },
+                          "recommendation": {
+                            "type": "string"
+                          },
+                          "refit_quality": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "pattern",
+                          "recommendation"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    },
+                    "required": [
+                      "run_id",
+                      "at",
+                      "state",
+                      "step",
+                      "steps",
+                      "fits_run",
+                      "decisions",
+                      "scored",
+                      "reported"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "schedule_id",
+              "mapping_id",
+              "cadence",
+              "state",
+              "next_run_at"
+            ],
+            "additionalProperties": {}
+          },
+          "watch_url": {
+            "description": "A page that shows the first run's steps live, for anyone holding the link. Valid 24 hours.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schedule"
+        ],
+        "additionalProperties": {}
+      },
+      "dg_delete_schedule_input": {
+        "type": "object",
+        "properties": {
+          "schedule_id": {
+            "description": "The schedule_id dg_schedule returned.",
+            "type": "string",
+            "pattern": "^sc_[0-9a-z]{20,40}$"
+          }
+        },
+        "required": [
+          "schedule_id"
+        ],
+        "additionalProperties": false
+      },
+      "dg_delete_schedule_output": {
+        "type": "object",
+        "properties": {
+          "schedule_id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "schedule_id",
           "deleted"
         ],
         "additionalProperties": {}

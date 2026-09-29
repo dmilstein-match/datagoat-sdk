@@ -4,7 +4,7 @@ info:
   title: "Datagoat journeys"
   summary: "The five journeys as workflows: the first call of each and the call after it."
   description: "Generated from src/core/journeys.ts by npm run spec:build; the same list dg_describe, the MCP prompts, the skills and the docs are built from."
-  version: "1.8.0"
+  version: "1.9.0"
 sourceDescriptions:
   - name: datagoat
     url: "./openapi.json"
@@ -12,7 +12,7 @@ sourceDescriptions:
 workflows:
   - workflowId: try
     summary: "Try it"
-    description: "Fits when the user has no data yet, or wants to see an answer and a refusal before using their own. Not when they already have a table of past cases. Ends with: A signed answer and an honest refusal, on free samples, in five minutes. Guide: https://datagoat.io/docs/quickstart"
+    description: "Fits when the user has no data yet, or wants to see an answer and a refusal before using their own. Not when they already have a table of past cases. Ends with: A signed answer, an honest refusal, and what history supported, on free samples, in five minutes. Guide: https://datagoat.io/docs/quickstart"
     steps:
       - stepId: try_first_call
         description: "The first call of Try it."
@@ -52,14 +52,7 @@ workflows:
               - condition: "$statusCode == 202"
   - workflowId: ask
     summary: "Ask your data"
-    description: "Fits when the user has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it. Not when they will score cases every day for their own customers. Ends with: The questions worth asking of your own table, and an answer or an honest refusal for each. Guide: https://datagoat.io/docs/ask-your-data"
-    inputs:
-      type: object
-      properties:
-        entity_column:
-          type: string
-      required:
-        - entity_column
+    description: "Fits when the user has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it. Not when they will score cases for many customers of their own product. Ends with: Your own tables and logs mapped and asked, with a backtest or an honest no. Guide: https://datagoat.io/docs/ask-your-data"
     steps:
       - stepId: ask_first_call
         description: "The first call of Ask your data."
@@ -72,24 +65,27 @@ workflows:
           - condition: "$statusCode == 200"
         outputs:
           dataset_id: "$response.body#/dataset_id"
+          upload_pieces_url: "$response.body#/upload_pieces_url"
           upload_url: "$response.body#/upload_url"
           upload_page: "$response.body#/upload_page"
       - stepId: ask_then
-        description: "The call after it. The CSV reaches the dataset first: a program PUTs it to upload_url, or a person opens upload_page."
-        operationId: dg_suggest
+        description: "The call after it. The CSV reaches the dataset first: a program POSTs it in pieces to upload_pieces_url (or PUTs it to upload_url), or a person opens upload_page. With answers {} it confirms when no slot has two survivors and returns the ask; otherwise mapping_answers_incomplete names the questions, which a proposal (the same call without answers) lists with their options for the person to answer."
+        operationId: dg_map
         requestBody:
           contentType: "application/json"
           payload:
-            data:
-              dataset_id: "<dataset_id>"
-            entity_column: "<entity_column>"
+            sources:
+              - dataset_id: "<dataset_id>"
+            answers: {}
           replacements:
-            - target: "/data/dataset_id"
+            - target: "/sources/0/dataset_id"
               value: "$steps.ask_first_call.outputs.dataset_id"
-            - target: "/entity_column"
-              value: "$inputs.entity_column"
         successCriteria:
           - condition: "$statusCode == 200"
+        outputs:
+          mapping_id: "$response.body#/mapping_id"
+          dataset_id: "$response.body#/dataset_id"
+          ask: "$response.body#/ask"
   - workflowId: ship
     summary: "Ship a product"
     description: "Fits when the user will score many customers' cases repeatedly, on a schedule, inside their own product. Not when it is a one-off question about one table. Ends with: A model per customer that scores new cases with no fit, gated before any action. Guide: https://datagoat.io/docs/build"
@@ -183,6 +179,8 @@ workflows:
             retryLimit: 200
             criteria:
               - condition: "$statusCode == 202"
+        outputs:
+          model_ref: "$response.body#/answers/churn/model_ref"
   - workflowId: run
     summary: "Run it"
     description: "Fits when the user already has a model_ref in use and is learning what happened to the cases it scored. Not when no model has been fitted yet. Ends with: Outcomes reported, drift watched, and each model renewed, replaced or retired on evidence. Guide: https://datagoat.io/docs/run"
@@ -193,9 +191,12 @@ workflows:
           type: string
         outcomes:
           type: array
+        mapping_id:
+          type: string
       required:
         - model_ref
         - outcomes
+        - mapping_id
     steps:
       - stepId: run_first_call
         description: "The first call of Run it."
@@ -214,19 +215,23 @@ workflows:
           - condition: "$statusCode == 200"
       - stepId: run_then
         description: "The call after it."
-        operationId: dg_drift
+        operationId: dg_schedule
         requestBody:
           contentType: "application/json"
           payload:
-            model_ref: "<model_ref>"
+            mapping_id: "<mapping_id>"
+            cadence: monthly
+            subject_kind: org
           replacements:
-            - target: "/model_ref"
-              value: "$inputs.model_ref"
+            - target: "/mapping_id"
+              value: "$inputs.mapping_id"
         successCriteria:
           - condition: "$statusCode == 200"
+        outputs:
+          schedule_id: "$response.body#/schedule_id"
   - workflowId: prove
     summary: "Prove it"
-    description: "Fits when the user must show someone the calls were right, or measure whether acting on them worked. Not when they only need the answer. Ends with: A track record anyone can check: calls made before the outcome, graded after, every call signed. Guide: https://datagoat.io/docs/prove"
+    description: "Fits when the user must show someone the calls were right, or measure whether acting on them worked. Not when they only need the answer. Ends with: What history supported, a signed forward record, and evidence from acting, each labelled for what it is. Guide: https://datagoat.io/docs/prove"
     inputs:
       type: object
       properties:

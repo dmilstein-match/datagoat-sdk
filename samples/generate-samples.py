@@ -1,4 +1,5 @@
-"""Generate the sample datasets, deterministically: three tables and one of every other shape.
+"""Generate the sample datasets, deterministically: three tables, one of every other shape, and
+Parley's three raw exports (a billing table and two event logs) that dg_map turns into a record.
 
 Each carries a REAL joint pattern — a combination of conditions that together predict the
 outcome — because that is what the engine looks for and what a demo must actually find. A
@@ -362,6 +363,157 @@ def deal_stages():
     print(f"deal_activity: {len(events)} rows")
 
 
+#: Parley's log ends on this day: 90 days after the 4-week grid point 2025-09-01 (the grid runs every
+#: 28 days from Monday 1970-01-05), so that point's window closes on the log's last day. A
+#: cancellation (never on the last day) then has a closed first positive window unless the account's
+#: first reading came under 90 days before it (3 accounts at the documented mapping: positives_open),
+#: and the billing export's `status` restates the outcome to the entity-grain guard.
+PARLEY_END = (2025, 11, 30)
+
+
+def _poisson(rnd, lam):
+    """A Poisson draw from random.Random (Knuth; lam is small here)."""
+    if lam <= 0:
+        return 0
+    import math as _m
+    limit, k, p = _m.exp(-lam), 0, 1.0
+    while True:
+        p *= rnd.random()
+        if p <= limit:
+            return k
+        k += 1
+
+
+def _hid(prefix, key, taken):
+    """A shuffled, non-monotone text id (trap 9): the first 8 hex digits of sha256(key)."""
+    import hashlib
+    h = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    n = 8
+    while f"{prefix}_{h[:n]}" in taken:
+        n += 1
+    out = f"{prefix}_{h[:n]}"
+    taken.add(out)
+    return out
+
+
+def parley():
+    """Parley, a synthetic AI support assistant sold to small companies: its three raw exports, the
+    founder scenario's sources (spec v3 S12, §8). No outcome column anywhere: dg_map builds one.
+
+    - parley_billing.csv (a table, one row per account): plan, billing_cycle, helpdesk, seats, mrr,
+      status, signed_up_at, cancelled_at. `status` and `cancelled_at` are the export as it stood at
+      the end, so they restate the outcome (the leak guard quarantines both); seats and mrr are
+      numbers as of the export (excluded as_of_export); plan, billing_cycle and helpdesk are carried.
+    - parley_events.csv (a log): account_id, ts, event in {ai_resolution, login, handoff}.
+    - parley_tickets.csv (a log, part of billing): ticket_id, account_id, opened_at, topic in
+      {how_to, bug, billing}.
+
+    The world, a churny small-business book: accounts sign up from 2024-01-01 (a launch cohort in
+    the first eight weeks, then a steady trickle) until the log ends on PARLEY_END, and about three
+    in four of them cancel by then. An account on starter cancels more often than one on scale,
+    annual billing and a zendesk helpdesk less often, a gorgias helpdesk and a poor fit (the
+    assistant hands off more of its conversations) more often, and every account most often in its
+    first 90 days. Most cancellations follow three to seven months of souring: logins fall first,
+    then resolutions, while hand-offs and bug and billing tickets rise. One in five is abrupt (no warning),
+    and some healthy accounts dip for a few months and recover (false alarms), so no one column
+    gives the answer away. Account size varies widely, so a raw count says little on its own.
+
+    Measured against the engine at dg_map's documented mapping (4w grid, 90-day horizon, outcome
+    words "cancel"; docs/map.md pins the values): closed-row prevalence of cancelled_at about 0.12,
+    inside the gate's [0.05, 0.80]; every cutoff of the default backtest graded. Seeded;
+    byte-reproducible (LF).
+    """
+    import datetime as _dt
+    rnd = random.Random(20260929)
+    start = _dt.date(2024, 1, 1)
+    end = _dt.date(*PARLEY_END)
+    days = (end - start).days + 1
+    taken = set()
+    signups = sorted([rnd.randint(0, 55) for _ in range(360)]
+                     + [d for d in range(56, days - 14) if rnd.random() < 0.7])
+    rate28 = {"starter": 0.16, "growth": 0.11, "scale": 0.07}
+    price = {"starter": 49, "growth": 149, "scale": 499}
+    accounts, events, tickets = [], [], []
+    for i, s_day in enumerate(signups):
+        aid = _hid("acct", f"parley-account-{i}", taken)
+        plan = rnd.choices(["starter", "growth", "scale"], [0.45, 0.35, 0.20])[0]
+        annual = rnd.random() < {"starter": 0.10, "growth": 0.25, "scale": 0.50}[plan]
+        helpdesk = rnd.choice(["zendesk", "intercom", "freshdesk", "gorgias"])
+        poor_fit = rnd.random() < 0.30
+        seats = {"starter": rnd.randint(1, 3), "growth": rnd.randint(3, 10), "scale": rnd.randint(8, 40)}[plan]
+        volume = {"starter": 0.5, "growth": 0.9, "scale": 1.6}[plan] * rnd.lognormvariate(0.0, 0.45)
+        # When the account starts to sour: a daily hazard from its plan, billing, fit and helpdesk,
+        # doubled in its first 90 days (onboarding that never took). How it ends: abrupt (no warning),
+        # or a decline of 90-210 days before it cancels, logins falling first.
+        h = (rate28[plan] / 28.0 * (0.6 if annual else 1.0) * (1.8 if poor_fit else 1.0)
+             * {"gorgias": 1.4, "zendesk": 0.85}.get(helpdesk, 1.0))
+        early = rnd.expovariate(2.0 * h)
+        sour = s_day + 20 + int(early if early < 90 else 90 + rnd.expovariate(h))
+        abrupt = rnd.random() < 0.20
+        decline = 0 if abrupt else rnd.randint(90, 210)
+        cancel = sour + decline + (rnd.randint(0, 10) if abrupt else 0)
+        floor = rnd.uniform(0.05, 0.35)
+        cancelled = cancel <= days - 2          # never on the log's last day (see PARLEY_END)
+        # A false alarm: a dip of 60-120 days to 40-70% of normal, then back.
+        dip_at = s_day + 30 + int(rnd.expovariate(0.02 / 28.0))
+        dip_len, dip_to = rnd.randint(60, 120), rnd.uniform(0.40, 0.70)
+        stop = cancel if cancelled else days
+        week_noise = 1.0
+        for d in range(s_day, stop):
+            if (d - s_day) % 7 == 0:
+                week_noise = max(0.4, min(1.8, week_noise * 0.5 + 0.5 * rnd.lognormvariate(0.0, 0.2)))
+            m = min(1.0, 0.5 + 0.5 * (d - s_day) / 21.0) * week_noise
+            logins = m
+            souring = 0.0
+            if not abrupt and sour <= d < cancel:
+                souring = (d - sour) / float(max(1, decline))
+                m *= 1.0 - (1.0 - floor) * souring
+                logins *= 1.0 - (1.0 - floor) * min(1.0, 1.6 * souring)
+            if dip_at <= d < dip_at + dip_len:
+                x = (d - dip_at) / float(dip_len)
+                dip = 1.0 - (1.0 - dip_to) * (1.0 - abs(2.0 * x - 1.0))
+                m *= dip
+                logins *= dip
+            share = min(0.6, (0.30 if poor_fit else 0.15) + 0.30 * souring)
+            day = start + _dt.timedelta(days=d)
+            for kind, lam in (("ai_resolution", volume * m * (1 - share) / 7.0),
+                              ("handoff", volume * m * share / 7.0),
+                              ("login", 0.45 * min(1.0, logins) / 7.0)):
+                for _ in range(_poisson(rnd, lam)):
+                    events.append([aid, f"{day.isoformat()}T{rnd.randint(7, 20):02d}:{rnd.randint(0, 59):02d}:00", kind])
+            onboarding = d - s_day < 45
+            t_rate = (0.05 + (0.25 if onboarding else 0.0) + (0.05 if poor_fit else 0.0) + 0.30 * souring) / 7.0
+            for _ in range(_poisson(rnd, t_rate)):
+                w_how = 0.45 if onboarding else 0.25
+                w_bug = 0.40 + (0.15 if poor_fit else 0.0) + 0.6 * souring
+                w_bill = 0.15 + 0.5 * souring
+                topic = rnd.choices(["how_to", "bug", "billing"], [w_how, w_bug, w_bill])[0]
+                tickets.append([None, aid, f"{day.isoformat()}T{rnd.randint(8, 18):02d}:{rnd.randint(0, 59):02d}:00", topic])
+        status = "cancelled" if cancelled else ("past_due" if rnd.random() < 0.04 else "active")
+        accounts.append([aid, plan, "annual" if annual else "monthly", helpdesk, seats,
+                         seats * price[plan] // (3 if plan == "scale" else 1) * (10 if annual else 1) // (12 if annual else 1),
+                         status, (start + _dt.timedelta(days=s_day)).isoformat(),
+                         f"{(start + _dt.timedelta(days=cancel)).isoformat()}T{rnd.randint(9, 17):02d}:00:00" if cancelled else ""])
+    events.sort(key=lambda r: (r[1], r[0], r[2]))
+    tickets.sort(key=lambda r: (r[2], r[1], r[3]))
+    for n, t in enumerate(tickets):
+        t[0] = _hid("tkt", f"parley-ticket-{n}", taken)
+    accounts.sort(key=lambda r: r[0])
+    out = sys.argv[1]
+    for name, header, rows in (
+        ("parley_billing", ["account_id", "plan", "billing_cycle", "helpdesk", "seats", "mrr", "status", "signed_up_at", "cancelled_at"], accounts),
+        ("parley_events", ["account_id", "ts", "event"], events),
+        ("parley_tickets", ["ticket_id", "account_id", "opened_at", "topic"], tickets),
+    ):
+        with open(f"{out}/{name}.csv", "w", newline="", encoding="utf-8") as f:
+            wr = csv.writer(f, lineterminator="\n")
+            wr.writerow(header)
+            wr.writerows(rows)
+    first_year = sum(1 for a in accounts if a[8] and a[8][:10] < "2025-01-01")
+    print(f"parley_billing: {len(accounts)} accounts, {sum(1 for a in accounts if a[8])} cancelled "
+          f"({first_year} in 2024); parley_events: {len(events)} rows; parley_tickets: {len(tickets)} rows")
+
+
 saas_churn()
 b2b_leads()
 telco_churn()
@@ -371,3 +523,5 @@ sensor_stream()
 customer_events()
 store_weekly()
 deal_stages()
+
+parley()

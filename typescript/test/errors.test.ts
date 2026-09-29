@@ -28,6 +28,10 @@ test("problems are typed by family under DatagoatError; a refusal is an answer, 
   }
   const v = (async () => problem("invalid_request", 422, { field: "questions.q.cuts" })) as unknown as typeof fetch;
   await assert.rejects(new Datagoat({ apiKey: "k", baseUrl: "http://x", fetch: v }).drift("mr1_x"), (e: ValidationError) => e.field === "questions.q.cuts");
+  // E10: a problem the engine raised names the engine's call beside the request's own id.
+  const eng = (async () => problem("unknown_case_id", 422, { request_id: "r1", engine_request_id: "tk_1" })) as unknown as typeof fetch;
+  await assert.rejects(new Datagoat({ apiKey: "k", baseUrl: "http://x", fetch: eng }).drift("mr1_x"),
+    (e: DatagoatError) => e.problem.request_id === "r1" && e.problem.engine_request_id === "tk_1");
   const gone = (async () => problem("model_expired", 410)) as unknown as typeof fetch;
   await assert.rejects(new Datagoat({ apiKey: "k", baseUrl: "http://x", fetch: gone }).drift("mr1_x"), (e: NotFoundError) => e.gone === true);
   const refused = (async () => new Response(JSON.stringify({ status: "done", answers: { q: { type: "yesno", state: "refused", reasons: ["too_few_predictors"], needs: { columns: 2 }, have: { columns: 2 } } } }))) as unknown as typeof fetch;

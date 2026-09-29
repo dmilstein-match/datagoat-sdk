@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.10.0
+
+- Contract 1.9.0: twenty-one operations.
+- `map(sources, answers=...)` / `map({ sources, answers })`: map a table, or event logs with a
+  table, into a record. Without `answers` it is a proposal whose `questions` are the user's to
+  answer; with them, the built record, its `mapping_id` and a ready-to-run `ask`. Never retried on
+  a 5xx.
+- `backtest(dataset_id, subject_kind=...)`: what a record `map` built supported in its own past,
+  per cutoff, beside a naive baseline. A task like `ask` (`wait`, `on_progress` / `onProgress`,
+  `on_event` / `onEvent`, `idempotency_key`, `response_format`).
+- `schedule(mapping_id, cadence=..., subject_kind=...)` and `delete_schedule(schedule_id)` /
+  `deleteSchedule(schedule_id)`: keep a confirmed mapping over `fetch_url` sources answered on a
+  cadence (`daily`, `weekly`, `monthly`), or end it. Never retried on a 5xx.
+- `snapshots(snapshot_every=..., horizon=..., label=...)`: the snapshots form without a snapshot
+  table; ask it with `cases={"open": True}` for today's cases.
+- `response_format="compact"` on `ask`, `poll` and `page`.
+- `upload_file(path)` / `uploadFile(pathOrBytes)`: a CSV, `.csv.gz` or Parquet file of any size,
+  in pieces of up to 4 MB to the client's own base URL only (no other host, no redirects), or
+  `transport="presigned"` to PUT it to the storage host.
+- `preflight` is deprecated (Python `DeprecationWarning`, TypeScript `@deprecated`) and served
+  until contract 2.0.0; `map([dataset_id])` on the same table reports the same and more.
+- CLI: `datagoat upload`, `datagoat map`, `datagoat backtest` and `datagoat schedule`.
+
 ## 1.9.0
 
 - Watching a fit. `ask(..., on_progress=fn)` / `ask({ onProgress })`: while a first fit runs, the

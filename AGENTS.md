@@ -11,9 +11,9 @@ holds on rows the model never saw. This file is for coding agents that call it.
 | Journey | Fits when the user… | Not when… | First call |
 |---|---|---|---|
 | [Try it](https://datagoat.io/docs/quickstart) | has no data yet, or wants to see an answer and a refusal before using their own | they already have a table of past cases (Ask your data) | `dg_describe`, then `dg_ask` (a sample's ready-to-run ask) |
-| [Ask your data](https://datagoat.io/docs/ask-your-data) | has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it | they will score cases every day for their own customers (Ship a product) | `dg_add_dataset` (upload: true for a file a person holds), then `dg_suggest` |
+| [Ask your data](https://datagoat.io/docs/ask-your-data) | has a table of past cases with a yes/no outcome (churned, converted, faulted) and a question about it | they will score cases for many customers of their own product (Ship a product) | `dg_add_dataset` (upload: true, one per source), then `dg_map` (returns the ask; dg_backtest and dg_ask follow; a schedule needs fetch_url sources) |
 | [Ship a product](https://datagoat.io/docs/build) | will score many customers' cases repeatedly, on a schedule, inside their own product | it is a one-off question about one table (Ask your data) | `dg_ask` (with namespace and model_ttl_days), then `dg_ask` (by model_ref, no fit) |
-| [Run it](https://datagoat.io/docs/run) | already has a model_ref in use and is learning what happened to the cases it scored | no model has been fitted yet (Ask your data) | `dg_report_outcomes`, then `dg_drift` |
+| [Run it](https://datagoat.io/docs/run) | already has a model_ref in use and is learning what happened to the cases it scored | no model has been fitted yet (Ask your data) | `dg_report_outcomes`, then `dg_schedule` (or refit_of + dg_drift by hand) |
 | [Prove it](https://datagoat.io/docs/prove) | must show someone the calls were right, or measure whether acting on them worked | they only need the answer (Ask your data) | `dg_verify`, then `dg_track_record` (or dg_evidence, whether acting on the calls worked) |
 
 ## Rules
@@ -44,11 +44,11 @@ holds on rows the model never saw. This file is for coding agents that call it.
 
 | Journey | Ends with | Docs | Skills | Operations |
 |---|---|---|---|---|
-| Try it | A signed answer and an honest refusal, on free samples, in five minutes. | https://datagoat.io/docs/quickstart | datagoat-first-run | dg_describe, dg_ask, dg_verify |
-| Ask your data | The questions worth asking of your own table, and an answer or an honest refusal for each. | https://datagoat.io/docs/ask-your-data | datagoat-ask | dg_add_dataset, dg_suggest, dg_preflight, dg_ask, dg_poll, dg_page |
-| Ship a product | A model per customer that scores new cases with no fit, gated before any action. | https://datagoat.io/docs/build | datagoat-product, datagoat-gate | dg_ask, dg_profile, dg_extend_model, dg_delete_model |
-| Run it | Outcomes reported, drift watched, and each model renewed, replaced or retired on evidence. | https://datagoat.io/docs/run | datagoat-product | dg_report_outcomes, dg_drift, dg_extend_model, dg_delete_model |
-| Prove it | A track record anyone can check: calls made before the outcome, graded after, every call signed. | https://datagoat.io/docs/prove | datagoat-prove | dg_verify, dg_attest, dg_report_outcomes, dg_evidence, dg_track_record |
+| Try it | A signed answer, an honest refusal, and what history supported, on free samples, in five minutes. | https://datagoat.io/docs/quickstart | datagoat-first-run | dg_describe, dg_ask, dg_verify, dg_map, dg_backtest |
+| Ask your data | Your own tables and logs mapped and asked, with a backtest or an honest no. | https://datagoat.io/docs/ask-your-data | datagoat-ask | dg_add_dataset, dg_map, dg_backtest, dg_suggest, dg_preflight (deprecated), dg_ask, dg_poll, dg_page |
+| Ship a product | A model per customer that scores new cases with no fit, gated before any action. | https://datagoat.io/docs/build | datagoat-product, datagoat-gate | dg_ask, dg_profile, dg_extend_model, dg_delete_model, dg_map |
+| Run it | Outcomes reported, drift watched, and each model renewed, replaced or retired on evidence. | https://datagoat.io/docs/run | datagoat-product | dg_report_outcomes, dg_schedule, dg_delete_schedule, dg_drift, dg_extend_model, dg_delete_model |
+| Prove it | What history supported, a signed forward record, and evidence from acting, each labelled for what it is. | https://datagoat.io/docs/prove | datagoat-prove | dg_verify, dg_backtest, dg_attest, dg_report_outcomes, dg_evidence, dg_track_record |
 
 ## Operations
 
@@ -57,7 +57,7 @@ holds on rows the model never saw. This file is for coding agents that call it.
 | `dg_ask` | `POST https://api.datagoat.io/v1/ask` | Ask | one decision per answered case; the first ask on a record, or a question with refit_of, also runs a fit |
 | `dg_add_dataset` | `POST https://api.datagoat.io/v1/add-dataset` | Add a dataset | free |
 | `dg_poll` | `POST https://api.datagoat.io/v1/poll` | Poll a task | free |
-| `dg_preflight` | `POST https://api.datagoat.io/v1/preflight` | Check a table before asking | free |
+| `dg_preflight` | `POST https://api.datagoat.io/v1/preflight` | Check a table before asking (deprecated: `dg_map` reports the same and more; served until contract 2.0.0) | free |
 | `dg_report_outcomes` | `POST https://api.datagoat.io/v1/report-outcomes` | Report what happened | free |
 | `dg_drift` | `POST https://api.datagoat.io/v1/drift` | Has the pattern moved? | free |
 | `dg_verify` | `POST https://api.datagoat.io/v1/verify` | Verify a Verdict | free |
@@ -71,6 +71,10 @@ holds on rows the model never saw. This file is for coding agents that call it.
 | `dg_suggest` | `POST https://api.datagoat.io/v1/suggest` | Which questions are worth trying on this table? | free |
 | `dg_extend_model` | `POST https://api.datagoat.io/v1/extend-model` | Keep a model longer | free |
 | `dg_delete_model` | `POST https://api.datagoat.io/v1/delete-model` | Delete a model | free |
+| `dg_map` | `POST https://api.datagoat.io/v1/map` | Map sources into a record | free |
+| `dg_backtest` | `POST https://api.datagoat.io/v1/backtest` | What the record's past supports | one fit per cutoff that ran (a cutoff fitted before on the same record is reused, free); no decisions; free on the sample record |
+| `dg_schedule` | `POST https://api.datagoat.io/v1/schedule` | Keep a mapping answered on a cadence | each run bills the calls it makes: its fit (none when the record's labelled readings are unchanged) and its answered cases; the schedule itself is free |
+| `dg_delete_schedule` | `POST https://api.datagoat.io/v1/delete-schedule` | Delete a schedule | free |
 
 ## Optional
 
@@ -88,3 +92,7 @@ The free sample records:
 - `sample:agent_traces` (traces): Traces: 800 synthetic AI-agent runs with the agent, task and tool of each, one tool degrading mid-month. Which runs will fail?
 - `sample:deal_activity` (snapshots): Snapshots: sales activity (calls, emails, meetings) on 1,200 synthetic B2B deals, read as of the moment each deal entered each of three stages (the snapshot table sample:deal_stages). Which deals will be won?
 - `sample:deal_stages` (part of sample:deal_activity): The snapshot table of sample:deal_activity: one row per deal per stage entered (3,600 rows), with the deal's amount, when it closed and whether it was won. Asked alone it is refused: the stage and amount do not predict the outcome; the activity before each stage does.
+- `sample:parley_billing` (table): Parley's billing export: 811 synthetic small-company accounts of an AI support assistant, one row each (plan, billing cycle, helpdesk, seats, mrr, status, signed_up_at, cancelled_at). Raw, as exported: no outcome column. Map it with its two logs (dg_map, `map`) into a record of who cancels.
+- `sample:parley_events` (a log, part of sample:parley_billing): Parley's product log: 32,170 timed events (ai_resolution, login, handoff) from the accounts of sample:parley_billing, 2024-01-01 to 2025-11-30.
+- `sample:parley_tickets` (a log, part of sample:parley_billing): Parley's support tickets: 4,543 tickets (how_to, bug, billing) opened by the accounts of sample:parley_billing.
+- `sample:parley_record` (built by dg_map from `sample:parley_billing`, `sample:parley_events`, `sample:parley_tickets`): The Parley record: the documented mapping of sample:parley_events and sample:parley_tickets (logs) with sample:parley_billing (a table), each account read every 4 weeks for whether it cancels within 90 days. Built by dg_map, not a file: ask about today's open accounts, or backtest it.

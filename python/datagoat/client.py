@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence
@@ -29,6 +30,12 @@ from ._version import __version__
 DEFAULT_BASE = "https://api.datagoat.io"
 #: The API's request limit; a bigger body would be refused before reaching Datagoat.
 MAX_REQUEST_BYTES = 4_500_000
+#: Upload pieces (upload_file): the API takes at most PIECE_MAX_BYTES a piece and MAX_PIECES pieces;
+#: the client cuts at about PIECE_TARGET_BYTES, at a row boundary.
+PIECE_MAX_BYTES = 4_000_000
+PIECE_TARGET_BYTES = 3_500_000
+MAX_PIECES = 250
+UPLOAD_RETRIES = 5
 CREDENTIALS = Path(os.environ.get("DATAGOAT_CONFIG_DIR", Path.home() / ".config" / "datagoat")) / "credentials"
 
 
@@ -44,6 +51,11 @@ class Problem:
     doc_url: Optional[str] = None
     #: invalid_outcomes: every bad row, as {index, field, detail}.
     errors: Optional[List[Dict[str, Any]]] = None
+    #: Only when the analysis engine raised the problem: the engine's id for that call (an ask's
+    #: task_id). Quote it beside request_id to support.
+    engine_request_id: Optional[str] = None
+    #: mapping_expired: the manifest of the mapping whose record is gone (what it was built from).
+    manifest: Optional[Dict[str, Any]] = None
 
 
 class DatagoatError(Exception):
@@ -139,12 +151,14 @@ def saved_key() -> Optional[str]:
         return None
 
 
-#: Operations where sending the same request twice cannot do the work twice: reads, an ask (its
-#: idempotency_key returns the first call's task), deletes, and outcome reports (duplicates are
-#: recognised). An attest is safe only with an event_id; add-dataset (which may append) never is,
-#: except after a 429, which means the request was turned away before any work.
+#: Operations where sending the same request twice cannot do the work twice: reads, an ask and a
+#: backtest (their idempotency_key returns the first call's task), deletes, outcome reports
+#: (duplicates are recognised) and a profile (sent whole, it replaces the same profile again). An
+#: attest is safe only with an event_id; add-dataset (which may append) and map (a confirm stores a
+#: mapping) never are, except after a 429, which means the request was turned away before any work.
 RETRY_SAFE = frozenset({"ask", "poll", "page", "preflight", "verify", "describe", "drift", "evidence",
-                        "report-outcomes", "delete-dataset", "suggest", "extend-model", "delete-model"})
+                        "track-record", "profile", "report-outcomes", "delete-dataset", "suggest",
+                        "extend-model", "delete-model", "backtest"})
 
 
 def _may_retry(op: str, body: Optional[Mapping[str, Any]], status: Optional[int]) -> bool:
@@ -169,6 +183,13 @@ def _retry_after(header: Optional[str], body_ms: Any) -> Optional[float]:
 def _backoff(attempt: int) -> float:
     """1s, 2s, 4s ... with jitter, so many clients retrying at once spread out."""
     return min(30.0, 2 ** (attempt - 1)) * (0.5 + random.random() / 2)
+
+
+def _page_format(response_format: str) -> str:
+    """dg_poll and dg_page take "full" or "compact" (spec v3 S10)."""
+    if response_format not in ("full", "compact"):
+        raise ValueError('response_format is "full" or "compact"')
+    return response_format
 
 
 def _merge_pages(first: Dict[str, Any], pages: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -224,6 +245,111 @@ class _StreamUnavailable(Exception):
 
 class _Deadline(Exception):
     """The ask's deadline passed while watching the stream."""
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow no redirect: a 3xx surfaces as an HTTPError the caller turns into a problem."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def _upload_name(path: str) -> str:
+    """A filename the API accepts (letters, digits, dot, dash, underscore; at most 120)."""
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(path))[:120]
+    return name or "dataset.csv"
+
+
+def binary_format(path: str) -> Optional[str]:
+    """"gzip" or "parquet" when the file is one (gzip 1f 8b; Parquet PAR1 at both ends), else None
+    (a CSV). The server and the engine recognise them the same way, by their bytes."""
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        head = f.read(4)
+        if head[:2] == b"\x1f\x8b":
+            return "gzip"
+        if size >= 12 and head == b"PAR1":
+            f.seek(size - 4)
+            if f.read(4) == b"PAR1":
+                return "parquet"
+    return None
+
+
+def _byte_slices(f: Any, size: int = PIECE_TARGET_BYTES) -> Iterator[bytes]:
+    """A gzip or Parquet file's upload pieces: byte slices, joined verbatim by the server."""
+    while True:
+        block = f.read(size)
+        if not block:
+            return
+        yield block
+
+
+def _csv_pieces(f: Any, target: int = PIECE_TARGET_BYTES) -> Iterator[bytes]:
+    """Cut a CSV (a binary file object) into pieces: the header, a newline, then whole rows, each
+    piece at most `target` bytes unless one row alone is bigger. A row ends at a newline outside
+    double quotes, so a quoted field with line breaks is never split. Read a block at a time: the
+    file is never all in memory. Every piece is checked to be UTF-8."""
+    buf = b""
+    header: Optional[bytes] = None
+    body = row = scan = 0  # body: where the piece's rows start; row: the current row; scan: the next byte to read
+    quoted = False
+    eof = False
+
+    def piece(rows: bytes) -> bytes:
+        out = header + b"\n" + rows  # type: ignore[operator]
+        if len(out) > PIECE_MAX_BYTES:
+            raise ValueError(f"one row of this file is over {PIECE_MAX_BYTES:,} bytes; "
+                             'upload it with transport="presigned"')
+        try:
+            out.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError('this file is not UTF-8 text; save it as "CSV UTF-8" and upload it again') from None
+        return out
+
+    sent = 0
+    while True:
+        nl = buf.find(b"\n", scan)
+        if nl < 0:
+            if eof:
+                break
+            block = f.read(1 << 20)
+            if not block:
+                eof = True
+                continue
+            if header is not None and body > 0:  # drop what has been sent
+                buf, row, scan, body = buf[body:], row - body, scan - body, 0
+            buf += block
+            continue
+        quoted ^= bool(buf.count(b'"', scan, nl) & 1)
+        scan = nl + 1
+        if quoted:
+            continue
+        if header is None:
+            header = buf[:nl].rstrip(b"\r")
+            if header.startswith(b"\xef\xbb\xbf"):
+                header = header[3:]
+            body = row = nl + 1
+            continue
+        if row > body and len(header) + 1 + (nl + 1 - body) > target:
+            yield piece(buf[body:row])
+            sent += 1
+            body = row
+        row = nl + 1
+    if header is None and buf.strip():
+        header = buf.rstrip(b"\r")
+        buf = b""
+        body = row = 0
+    tail = buf[body:]
+    if tail.strip():
+        if row > body and len(header) + 1 + len(tail) > target:  # type: ignore[arg-type]
+            yield piece(buf[body:row])
+            sent += 1
+            tail = buf[row:]
+        if tail.strip():
+            yield piece(tail)
+            sent += 1
+    if not sent:
+        raise ValueError("the file needs a header row and at least one row of data")
 
 
 def _problem_from_http(e: urllib.error.HTTPError, remedy: str) -> DatagoatError:
@@ -373,7 +499,9 @@ class Client:
             err = error_for(Problem(e.code, p.get("code", "http_error"), p.get("detail", str(e.reason)),
                                     p.get("remedy", "see https://datagoat.io/docs"), p.get("field"),
                                     p.get("request_id") or e.headers.get("x-request-id"),
-                                    p.get("doc_url"), p.get("errors") if isinstance(p.get("errors"), list) else None))
+                                    p.get("doc_url"), p.get("errors") if isinstance(p.get("errors"), list) else None,
+                                    p.get("engine_request_id"),
+                                    manifest=p.get("manifest") if isinstance(p.get("manifest"), dict) else None))
             err.retry_after_s = _retry_after(e.headers.get("retry-after"), p.get("retry_after_ms"))
             raise err from None
 
@@ -489,10 +617,12 @@ class Client:
 
     def _follow(self, out: Dict[str, Any], *, wait: bool, timeout_s: Optional[float],
                 on_progress: Optional[Callable[[Dict[str, Any]], None]],
-                on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
+                on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+                response_format: Optional[str] = None) -> Dict[str, Any]:
         """Follow a pending task to its answer, bounded. Never re-submits: that would fit twice.
         With a callback, the task's event stream is watched first; without one, or when the stream
-        is not there, the task is polled as before."""
+        is not there, the task is polled as before. A compact ask is polled compact."""
+        poll_format = "compact" if response_format == "compact" else None
         deadline = time.monotonic() + (self.RUN_TIMEOUT_S if timeout_s is None else timeout_s)
         watched = False
         while wait and out.get("status") == "pending":
@@ -505,7 +635,7 @@ class Client:
                     raise DatagoatError(Problem(504, "poll_timeout", "the task is still running",
                                                 f"poll({task_id!r}) later; do not re-submit (that would fit twice)")) from None
                 if reached_end:
-                    out = self.poll(task_id)
+                    out = self.poll(task_id, response_format=poll_format)
                     continue
             if on_progress is not None:
                 on_progress(out)
@@ -513,7 +643,7 @@ class Client:
                 raise DatagoatError(Problem(504, "poll_timeout", "the task is still running",
                                             f"poll({task_id!r}) later; do not re-submit (that would fit twice)"))
             time.sleep(max(0.5, out.get("retry_after_ms", 2000) / 1000))
-            out = self.poll(task_id)
+            out = self.poll(task_id, response_format=poll_format)
         return out
 
     # -- the one call ----------------------------------------------------------- #
@@ -530,10 +660,12 @@ class Client:
             on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
         """Ask typed questions about cases, answered from a record of past outcomes.
 
-        Build questions with `yesno`, `score`, `choice`, `rank`. `cases` is {"ids": [...]} or
-        {"rows": [...]}; omit it to rank the whole record. When the record is not one row per case,
-        pass `shape` (build it with `events`, `series`, `panel`, `signals` or `traces`) and
-        `time_column`. Each answer's `state` is answered, refused or not_yet; a refusal is an
+        Build questions with `yesno`, `score`, `choice`, `rank`. `cases` is {"ids": [...]},
+        {"rows": [...]}, or {"open": True} for today's open cases (the engine finds them: on a
+        snapshots or mapped record, each case at as_of; each answered question's quality.record then
+        says how many labelled and open rows the fit read); omit it to rank the whole record. When
+        the record is not one row per case, pass `shape` (build it with `events`, `series`, `panel`,
+        `signals`, `traces` or `snapshots`) and `time_column`. Each answer's `state` is answered, refused or not_yet; a refusal is an
         answer, and retrying returns the same one.
 
         `export="csv"` adds `export.results_url`, a CSV of every case (one row per question per
@@ -546,6 +678,8 @@ class Client:
 
         `response_format="concise"` leaves each answer's Verdicts out of the response
         (`verdicts_withheld`); `download(out["page"]["answer_url"])` returns the whole answer.
+        `response_format="compact"` also shows each case as `entity_id`, `p`, `p_display` and, when
+        the answer has them, `band`, `level` and `says` (about a twentieth of the full size).
 
         A first fit on a large record answers pending; `ask` polls it to the end. Sending the ask
         again instead of polling would start (and bill) a second fit.
@@ -584,23 +718,25 @@ class Client:
                 raise ValueError('export is "csv"')
             body["export"] = export
         if response_format is not None:
-            if response_format not in ("full", "concise"):
-                raise ValueError('response_format is "full" or "concise"')
+            if response_format not in ("full", "concise", "compact"):
+                raise ValueError('response_format is "full", "concise" or "compact"')
             body["response_format"] = response_format
         for k, v in (("model_ttl_days", model_ttl_days), ("group_column", group_column), ("namespace", namespace)):
             if v is not None:
                 body[k] = v
+        page_format = "compact" if response_format == "compact" else None
         return self._whole(self._follow(self._call("ask", body), wait=wait, timeout_s=timeout_s, on_progress=on_progress,
-                                        on_event=on_event))
+                                        on_event=on_event, response_format=page_format), response_format=page_format)
 
-    def _whole(self, out: Dict[str, Any]) -> Dict[str, Any]:
-        """REST answers come whole; should one ever arrive paged, fetch the rest and join it."""
+    def _whole(self, out: Dict[str, Any], response_format: Optional[str] = None) -> Dict[str, Any]:
+        """REST answers come whole; should one ever arrive paged, fetch the rest (in the same
+        response_format) and join it."""
         cursor = (out.get("page") or {}).get("next_cursor")
         if out.get("status") != "done" or not cursor:
             return out
         pages: List[Dict[str, Any]] = []
         while cursor:
-            nxt = self.page(cursor)
+            nxt = self.page(cursor, response_format=response_format)
             pages.append(nxt)
             cursor = (nxt.get("page") or {}).get("next_cursor")
         merged = _merge_pages(out, pages)
@@ -677,26 +813,99 @@ class Client:
             self.add_dataset(dataset_id=first["dataset_id"], rows=rows[i:i + chunk_size])
         return first["dataset_id"]
 
-    def upload_file(self, path: str) -> str:
-        """Upload a CSV file of any size through a presigned URL and return its dataset_id."""
-        d = self.add_dataset(upload=True, filename=os.path.basename(path))
-        with open(path, "rb") as f:  # streamed from disk, not read into memory
-            req = urllib.request.Request(d["upload_url"], data=f, method="PUT", headers={
-                "content-type": "text/csv", "content-length": str(os.path.getsize(path))})
-            with urllib.request.urlopen(req, timeout=self.timeout):  # noqa: S310 - presigned URL we were given
-                pass
+    def upload_file(self, path: str, *, transport: str = "pieces",
+                    on_piece: Optional[Callable[[int], None]] = None) -> str:
+        """Upload a CSV, a gzip-compressed CSV or a Parquet file of any size and return its dataset_id.
+
+        A gzip or Parquet file (recognised by its bytes) goes as byte slices joined verbatim, and the
+        engine reads it; a CSV is cut at row boundaries. By default the file goes in pieces to this client's own base URL (api.datagoat.io): no other
+        host is contacted, so it works where only the API host is reachable (an agent's sandbox, a
+        locked-down network). Each piece is at most 4 MB, cut at a row boundary with the header on
+        every piece; a piece that fails is sent again, and the server ignores a piece it already
+        has. Redirects are not followed. `transport="presigned"` instead PUTs the whole file to the
+        presigned upload_url on the storage host. `on_piece(n)` hears each piece as it lands."""
+        if transport not in ("pieces", "presigned"):
+            raise ValueError('transport is "pieces" or "presigned"')
+        fmt = binary_format(path)
+        kind = "application/octet-stream" if fmt else "text/csv"
+        d = self.add_dataset(upload=True, filename=_upload_name(path))
+        if transport == "presigned":
+            with open(path, "rb") as f:  # streamed from disk, not read into memory
+                req = urllib.request.Request(d["upload_url"], data=f, method="PUT", headers={
+                    "content-type": kind, "content-length": str(os.path.getsize(path))})
+                with urllib.request.urlopen(req, timeout=self.timeout):  # noqa: S310 - presigned URL we were given
+                    pass
+            return d["dataset_id"]
+        url = d.get("upload_pieces_url")
+        if not isinstance(url, str) or "/v1/uploads/" not in url:
+            raise DatagoatError(Problem(502, "upload_pieces_unavailable", "the server returned no upload_pieces_url",
+                                        'upload with transport="presigned"'))
+        # The token is the credential; the pieces go to THIS client's host, never to another one.
+        token = url.rstrip("/").rsplit("/", 1)[-1]
+        at = f"{self.base}/v1/uploads/{quote(token, safe='')}"
+        session = uuid.uuid4().hex
+        n = 0
+        with open(path, "rb") as f:
+            for piece in (_byte_slices(f) if fmt else _csv_pieces(f)):
+                if n >= MAX_PIECES:
+                    raise ValueError(f"the file needs more than {MAX_PIECES} pieces of {PIECE_MAX_BYTES:,} bytes; "
+                                     'upload it with transport="presigned"')
+                self._send_piece(f"{at}/{n}", piece, kind, session)
+                n += 1
+                if on_piece is not None:
+                    on_piece(n)
+        self._send_piece(f"{at}/complete", json.dumps({"pieces": n}).encode(), "application/json", session)
         return d["dataset_id"]
+
+    def _send_piece(self, url: str, data: bytes, content_type: str, session: str) -> Dict[str, Any]:
+        """POST one piece, again after a dropped connection, a 429 or a 5xx (a repeated piece is a
+        no-op on the server). No key is sent: the upload link is the credential. A redirect is an
+        error, so no byte of the file is sent to a host the caller did not name."""
+        opener = urllib.request.build_opener(_NoRedirect)
+        attempt = 0
+        while True:
+            req = urllib.request.Request(url, data=data, method="POST", headers={
+                "content-type": content_type, "x-upload-session": session, "user-agent": f"datagoat-python/{__version__}"})
+            wait: Optional[float] = None
+            try:
+                with opener.open(req, timeout=self.timeout) as r:  # noqa: S310 - this client's own base URL
+                    return json.loads(r.read() or b"{}")
+            except urllib.error.HTTPError as e:
+                if 300 <= e.code < 400:
+                    raise DatagoatError(Problem(e.code, "upload_redirect_refused",
+                                                f"the upload was redirected (to {e.headers.get('location')}); pieces are sent only to {self.base}",
+                                                "check base_url: it must be the API itself")) from None
+                err = _problem_from_http(e, "send the file again")
+                if e.code not in (429, 502, 503, 504) or attempt >= UPLOAD_RETRIES:
+                    raise err from None
+                ra = e.headers.get("retry-after")
+                wait = float(ra) if ra and ra.isdigit() else None
+            except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout) as e:
+                if attempt >= UPLOAD_RETRIES:
+                    raise DatagoatError(Problem(503, "network_error", str(getattr(e, "reason", e)),
+                                                "check the connection, then upload the file again")) from None
+            attempt += 1
+            self._sleep(_backoff(attempt) if wait is None else min(wait, 60.0))
 
     def delete_dataset(self, dataset_id: str) -> Dict[str, Any]:
         """Delete a stored dataset now. Otherwise it is deleted 24 hours after its last use."""
         return self._call("delete-dataset", {"dataset_id": dataset_id})
 
-    def poll(self, task_id: str) -> Dict[str, Any]:
-        return self._whole(self._call("poll", {"task_id": task_id}))
+    def poll(self, task_id: str, response_format: Optional[str] = None) -> Dict[str, Any]:
+        """A task's status, then its answer. `response_format="compact"` shows a finished answer's
+        cases compact, as `ask` does."""
+        body: Dict[str, Any] = {"task_id": task_id}
+        if response_format is not None:
+            body["response_format"] = _page_format(response_format)
+        return self._whole(self._call("poll", body), response_format=response_format)
 
-    def page(self, cursor: str) -> Dict[str, Any]:
-        """The next page of a paged answer (answers over MCP are paged; REST answers come whole)."""
-        return self._call("page", {"cursor": cursor})
+    def page(self, cursor: str, response_format: Optional[str] = None) -> Dict[str, Any]:
+        """The next page of a paged answer (answers over MCP are paged; REST answers come whole).
+        The format is chosen per call: the same cursor gives full or compact cases."""
+        body: Dict[str, Any] = {"cursor": cursor}
+        if response_format is not None:
+            body["response_format"] = _page_format(response_format)
+        return self._call("page", body)
 
     def download(self, url: str, path: Optional[str] = None) -> Any:
         """Fetch an export or answer link (valid 24 hours; the link itself is the credential, so no
@@ -720,7 +929,14 @@ class Client:
     def preflight(self, dataset_id: str, *, outcome_column: Optional[str] = None,
                   predictors: Optional[Sequence[str]] = None, entity_column: Optional[str] = None) -> Dict[str, Any]:
         """Is the table worth asking about? Free; fits nothing. `entity_column` is reported as an
-        identifier and never counted as a usable predictor."""
+        identifier and never counted as a usable predictor.
+
+        Deprecated: served until contract 2.0.0, when it is removed. `map([dataset_id])` on the
+        same table reports the same and more (resolutions, fitness, blocking, advisory, case_variants).
+        Emits a DeprecationWarning; the call and its answer are unchanged."""
+        warnings.warn("preflight (dg_preflight) is deprecated and removed at contract 2.0.0; "
+                      "map (dg_map) on the same table reports the same and more.",
+                      DeprecationWarning, stacklevel=2)
         body: Dict[str, Any] = {"dataset_id": dataset_id}
         if outcome_column:
             body["outcome_column"] = outcome_column
@@ -767,7 +983,8 @@ class Client:
                 err = type(e)(Problem(e.problem.status, e.problem.code,
                                       f"{e.problem.detail} (rows 0 to {start - 1} were already sent and written: "
                                       f"{total['written']} written, {total['duplicates']} duplicate; rows {start} onward were not)",
-                                      e.problem.remedy, e.problem.field, e.problem.request_id, e.problem.doc_url, shifted))
+                                      e.problem.remedy, e.problem.field, e.problem.request_id, e.problem.doc_url, shifted,
+                                      e.problem.engine_request_id))
                 err.retry_after_s = e.retry_after_s
                 err.written_before = start
                 raise err from None
@@ -832,6 +1049,80 @@ class Client:
             body["include_categories"] = True
         return self._call("suggest", body)
 
+    def map(self, sources: Optional[Sequence[Any]] = None, *, answers: Optional[Mapping[str, Any]] = None,
+            outcome_words: Optional[Sequence[str]] = None, horizon: Any = None, snapshot_every: Optional[str] = None,
+            as_of: Optional[str] = None, mapping_id: Optional[str] = None,
+            closed_since: Optional[str] = None) -> Dict[str, Any]:
+        """Map a table, or one or two event logs with at most one table, into a record. Free.
+
+        `sources`: dataset ids (``"ds_…"`` or ``"sample:…"``) or source objects
+        (``{"dataset_id" | "fetch_url", "fetch_headers"?, "label"?}``). Without `answers` it
+        proposes and stores nothing: `questions` lists each slot where two or more candidates
+        survive, with its options; those choices are the user's to make. With `answers` it
+        confirms: `mapping_id`, `dataset_id`, `record` and a ready-to-run `ask` (add
+        `subject_kind`). `mapping_id` alone replays a confirm; `closed_since` adds `closed`.
+        `horizon`: days (1, 7, 30, 60 or 90), or ``{"value": n, "unit": "days"}``. Never retried
+        on a 5xx: a confirm stores a mapping (see RETRY_SAFE)."""
+        body: Dict[str, Any] = {}
+        if sources is not None:
+            body["sources"] = [{"dataset_id": s} if isinstance(s, str) else dict(s) for s in sources]
+        if answers is not None:
+            body["answers"] = dict(answers)
+        if outcome_words is not None:
+            body["outcome_words"] = [outcome_words] if isinstance(outcome_words, str) else list(outcome_words)
+        if horizon is not None:
+            body["horizon"] = {"value": int(horizon), "unit": "days"} if isinstance(horizon, (int, float)) else dict(horizon)
+        if snapshot_every is not None:
+            body["snapshot_every"] = snapshot_every
+        if as_of is not None:
+            body["as_of"] = as_of
+        if mapping_id is not None:
+            body["mapping_id"] = mapping_id
+        if closed_since is not None:
+            body["closed_since"] = closed_since
+        if "sources" not in body and "mapping_id" not in body:
+            raise ValueError("map needs sources (a proposal or a confirm) or mapping_id (a replay)")
+        return self._call("map", body)
+
+    def backtest(self, dataset_id: str, *, subject_kind: str, every: Optional[str] = None, last: Optional[int] = None,
+                 baseline: Optional[str] = None, acknowledge_decision_support: bool = False,
+                 idempotency_key: Optional[str] = None, response_format: Optional[str] = None,
+                 wait: bool = True, timeout_s: Optional[float] = None,
+                 on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+                 on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
+        """What a record `map` built from a log supported in its own past.
+
+        `dataset_id` is a confirm's dataset_id (a record built from a log) or
+        ``"sample:parley_record"``; anything else is `dataset_not_built`. At each of the last `last`
+        cutoffs (3-12, default 6) on the record's grid (`every`: its snapshot_every, the default, or
+        a multiple of it), a fit on what was known then is graded on what came next, beside a naive
+        baseline (``baseline="none"`` drops it): per cutoff capture, lift and calibration, then a
+        `summary`, a `decision` (supported, not_supported or not_yet) and one signed Verdict of
+        kind backtest (`verify` checks it). Every number is the engine's.
+
+        It runs as a task: a pending walk is followed to its result, as `ask` does, with the same
+        `on_progress`/`on_event` callbacks (stages loading, cutoff i of K, grading). Sending it
+        again instead would start a second walk; with the same `idempotency_key` (always sent) a
+        retry returns the first task. Costs one fit per cutoff that ran; free on the samples."""
+        if baseline is not None and baseline not in ("single_column", "none"):
+            raise ValueError('baseline is "single_column" or "none"')
+        if response_format is not None and response_format not in ("full", "concise"):
+            raise ValueError('response_format is "full" or "concise"')
+        body: Dict[str, Any] = {"data": {"dataset_id": dataset_id}}
+        cutoffs = {k: v for k, v in (("every", every), ("last", last)) if v is not None}
+        if cutoffs:
+            body["cutoffs"] = cutoffs
+        if baseline is not None:
+            body["baseline"] = baseline
+        body["subject_kind"] = subject_kind
+        if acknowledge_decision_support:
+            body["acknowledge_decision_support"] = True
+        if response_format is not None:
+            body["response_format"] = response_format
+        body["idempotency_key"] = idempotency_key or str(uuid.uuid4())
+        return self._whole(self._follow(self._call("backtest", body), wait=wait, timeout_s=timeout_s,
+                                        on_progress=on_progress, on_event=on_event))
+
     def extend_model(self, model_ref: str, days: int, *, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Keep a model answering until `days` (1-365) from now. Returns model_expires_at."""
         return self._call("extend-model", {"model_ref": model_ref, "days": int(days), **_ns(namespace)})
@@ -839,6 +1130,30 @@ class Client:
     def delete_model(self, model_ref: str, *, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Delete a model now; its model_ref stops answering."""
         return self._call("delete-model", {"model_ref": model_ref, **_ns(namespace)})
+
+    def schedule(self, mapping_id: str, *, cadence: str, subject_kind: str, acknowledge_decision_support: bool = False,
+                 namespace: Optional[str] = None) -> Dict[str, Any]:
+        """Keep a confirmed mapping answered on a cadence (``"daily"``, ``"weekly"`` or ``"monthly"``,
+        a calendar month). Each run fetches the mapping's sources again, rebuilds the record, fits
+        (with refit_of from the second run; skipped when the labelled readings are unchanged), reads
+        drift, scores today's open cases and reports the outcomes that closed, each step an ordinary
+        call with idempotency_key ``<run_id>:<step>``. Returns ``schedule`` (schedule_id, state,
+        next_run_at, last_run) and the first run's ``watch_url``.
+
+        Needs a live key created with "Can report outcomes" (``schedule_key_required`` otherwise) and a
+        mapping whose sources are all fetch_url (``schedule_sources_not_refetchable``). Not retried on
+        a 5xx: a retry could create a second schedule (see RETRY_SAFE). `describe()` lists schedules."""
+        if cadence not in ("daily", "weekly", "monthly"):
+            raise ValueError('cadence is "daily", "weekly" or "monthly"')
+        body: Dict[str, Any] = {"mapping_id": mapping_id, "cadence": cadence, "subject_kind": subject_kind}
+        if acknowledge_decision_support:
+            body["acknowledge_decision_support"] = True
+        return self._call("schedule", {**body, **_ns(namespace)})
+
+    def delete_schedule(self, schedule_id: str) -> Dict[str, Any]:
+        """End a schedule now: no further run, and its stored key id, scopes and encrypted fetch
+        headers are deleted. The mapping, models and reported outcomes stay."""
+        return self._call("delete-schedule", {"schedule_id": schedule_id})
 
     def verify(self, verdict: Mapping[str, Any], signature: Optional[Mapping[str, Any]]) -> str:
         """valid | invalid_signature | expired | unknown_key. Needs no key. Never act on anything but valid."""

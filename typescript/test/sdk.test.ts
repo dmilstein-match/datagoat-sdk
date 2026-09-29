@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Datagoat, DatagoatError, choice, register, yesno } from "../src/index.ts";
+import { Datagoat, DatagoatError, RETRY_SAFE, choice, register, yesno } from "../src/index.ts";
 
 test("builders send only what is stated; choice demands polarity", () => {
   assert.deepEqual(yesno("y"), { type: "yesno", outcome_column: "y" });
@@ -203,6 +203,28 @@ test("askMany refuses wait: false; a joined answer has no next cursor", async ()
   assert.deepEqual(out.page, { answer_url: "u", expires_at: "e" });
 });
 
+test("compact (spec v3 S10): asked, polled and paged compact; poll and page take the format per call", async () => {
+  const t = scripted([
+    { body: { status: "pending", task_id: "tk_9", retry_after_ms: 0 } },
+    { body: { status: "done", task_id: "tk_9", page: { answer_url: "u", expires_at: "e", next_cursor: "c1" }, answers: { q: { type: "yesno", state: "answered", cases: [{ entity_id: "a", p: 0.4, p_display: "40%" }], verdicts_withheld: { count: 1, reason: "response_format_compact" } } } } },
+    { body: { status: "done", page: { answer_url: "u", expires_at: "e" }, answers: { q: { type: "yesno", state: "answered", cases: [{ entity_id: "b", p: 0.1, p_display: "10%" }] } } } },
+  ]);
+  const out: any = await t.dg.ask({ q: yesno("y") }, { ...askOpts, response_format: "compact" });
+  assert.deepEqual(out.answers.q.cases.map((c: any) => c.entity_id), ["a", "b"]);
+  assert.deepEqual(t.seen.map((s) => s.path), ["/v1/ask", "/v1/poll", "/v1/page"]);
+  assert.equal(t.seen[0]!.body.response_format, "compact");
+  assert.deepEqual(t.seen[1]!.body, { task_id: "tk_9", response_format: "compact" });
+  assert.deepEqual(t.seen[2]!.body, { cursor: "c1", response_format: "compact" });
+  assert.deepEqual(out.page, { answer_url: "u", expires_at: "e" }, "the link to the whole answer stays");
+  // The default sends no format; a format poll and page do not take is refused before any call.
+  const d = scripted([{ body: { status: "done", answers: {} } }]);
+  await d.dg.page("c1");
+  assert.deepEqual(d.seen[0]!.body, { cursor: "c1" });
+  await assert.rejects(d.dg.page("c1", "concise" as never), /full" or "compact/);
+  await assert.rejects(d.dg.poll("tk_9", "short" as never), /full" or "compact/);
+  assert.equal(d.seen.length, 1);
+});
+
 test("building a product: fromModel with no data, namespaces, lifetimes, snapshots, suggest, models", async () => {
   const { fromModel, snapshots } = await import("../src/index.ts");
   const ref = "mr1_" + "a".repeat(32);
@@ -218,6 +240,17 @@ test("building a product: fromModel with no data, namespaces, lifetimes, snapsho
     shape: snapshots({ snapshots: { dataset_id: "ds_2" }, snapshot_id_column: "snap", snapshot_time_column: "at", lookback_days: [7, 30] }),
   });
   assert.deepEqual(bodies[1]![1].shape, { kind: "snapshots", snapshots: { dataset_id: "ds_2" }, snapshot_id_column: "snap", snapshot_time_column: "at", lookback_days: [7, 30] });
+  // P2: the form without a snapshot table, asked about today's open cases.
+  const grid = snapshots({ snapshot_every: "4w", horizon: { value: 90, unit: "days" }, label: { lapsed: true }, event_column: "event", lookbacks_days: [7, 30] });
+  assert.deepEqual(grid, { kind: "snapshots", snapshot_every: "4w", horizon: { value: 90, unit: "days" }, label: { lapsed: true }, event_column: "event", lookbacks_days: [7, 30] });
+  assert.deepEqual(snapshots({ snapshot_every: "1w", horizon: { value: 30, unit: "days" }, outcome_time_column: "cancelled_at", terminal: true }),
+    { kind: "snapshots", snapshot_every: "1w", horizon: { value: 30, unit: "days" }, outcome_time_column: "cancelled_at", terminal: true });
+  assert.throws(() => snapshots({ snapshot_every: "4w", horizon: { value: 90, unit: "days" } }), /label/);
+  assert.throws(() => snapshots({ snapshot_every: "4w", horizon: { value: 90, unit: "days" }, label: { lapsed: true }, outcome_time_column: "x" }), /not both/);
+  await dg.ask({ quiet: yesno("lapsed_90d") }, { data: { dataset_id: "ds_1" }, entity_column: "account_id", subject_kind: "org", time_column: "ts", shape: grid, cases: { open: true } });
+  const sentGrid = bodies.splice(2, 1)[0]![1];
+  assert.deepEqual(sentGrid.cases, { open: true });
+  assert.equal(sentGrid.shape.snapshot_every, "4w");
   assert.equal(bodies[1]![1].model_ttl_days, 365);
   await dg.suggest({ data: { dataset_id: "sample:saas_churn" }, entity_column: "customer_id" });
   await dg.extendModel(ref, 200);
@@ -261,4 +294,99 @@ test("offline: numbers and text are written the way Python's json.dumps writes t
   for (const [x, want] of cases) assert.equal(pyNumber(x as number), want);
   assert.equal(canonical({ b: "é", a: [true, null] }), '{"a":[true,null],"b":"\\u00e9"}');
   assert.equal(canonical({ b: "é" }, false), '{"b":"é"}');
+});
+
+test("map: the public contract on the wire; a confirm is never re-sent on a 5xx; mapping_expired carries manifest; mapping_answers_incomplete names its slots in detail", async () => {
+  const bodies: Array<[string, any]> = [];
+  const replies: Array<[unknown, number]> = [
+    [{ status: "proposed", questions: [{ slot: "outcome", options: ["lapsed", "event_type:e:event=cancelled"], why: "two" }] }, 200],
+    [{ code: "engine_error", detail: "busy", remedy: "retry" }, 503],
+    [{ status: 410, code: "mapping_expired", detail: "gone", remedy: "map again", field: "mapping_id", manifest: { entity: "account_id" } }, 410],
+    [{ status: 422, code: "mapping_answers_incomplete", detail: "Some questions have no answer (outcome).", remedy: "answer", field: "answers.outcome" }, 422],
+  ];
+  const f = (async (url: string, init: RequestInit) => {
+    bodies.push([new URL(url).pathname, JSON.parse(String(init.body))]);
+    const [body, status] = replies.shift()!;
+    return new Response(JSON.stringify(body), { status });
+  }) as unknown as typeof fetch;
+  const dg = new Datagoat({ apiKey: "dgk_live_x", baseUrl: "http://x", fetch: f });
+  const out = await dg.map({ sources: ["sample:parley_events", { fetch_url: "https://x.example/b.csv", label: "billing" }], outcome_words: ["cancel"], horizon: 90, snapshot_every: "4w" });
+  assert.equal((out.questions as any[])[0].slot, "outcome");
+  assert.deepEqual(bodies[0], ["/v1/map", {
+    sources: [{ dataset_id: "sample:parley_events" }, { fetch_url: "https://x.example/b.csv", label: "billing" }],
+    horizon: { value: 90, unit: "days" }, outcome_words: ["cancel"], snapshot_every: "4w",
+  }]);
+  await assert.rejects(dg.map({ mapping_id: "mp_" + "a".repeat(25), closed_since: "2025-10-01" }), (e: DatagoatError) => e.problem.status === 503);
+  assert.equal(bodies.length, 2, "a confirm stores a mapping: it is not re-sent");
+  await assert.rejects(dg.map({ mapping_id: "mp_" + "b".repeat(25) }), (e: DatagoatError) => (e.problem.manifest as any)?.entity === "account_id");
+  await assert.rejects(dg.map({ sources: ["ds_x"], answers: {} }), (e: DatagoatError) => e.problem.detail.includes("(outcome)") && e.problem.field === "answers.outcome" && !("slots" in e.problem));
+  assert.throws(() => dg.map({}), /sources/);
+});
+
+test("preflight carries a @deprecated JSDoc tag naming map and contract 2.0.0 (spec v3 S2), and is still served", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  const doc = /\/\*\*((?:(?!\*\/)[^])*)\*\/\s*preflight\(/.exec(src);
+  assert.ok(doc, "a JSDoc block sits on preflight");
+  const tag = doc![1]!.slice(doc![1]!.indexOf("@deprecated"));
+  assert.match(tag, /^@deprecated/);
+  assert.match(tag, /\bmap\(/, "names map, the replacement");
+  assert.match(tag, /2\.0\.0/, "and the removal version");
+  const seen: string[] = [];
+  const f = (async (url: string) => { seen.push(new URL(url).pathname); return new Response(JSON.stringify({ dataset_id: "ds_x" })); }) as unknown as typeof fetch;
+  await new Datagoat({ apiKey: "k", baseUrl: "http://x", fetch: f }).preflight("ds_x");
+  assert.deepEqual(seen, ["/v1/preflight"]);
+});
+
+test("backtest: data.dataset_id and cutoffs on the wire, an idempotency key always sent; a pending walk is polled to its result; retried on a 5xx with the same key", async () => {
+  const bodies: Array<[string, any]> = [];
+  const done = { status: "done", task_id: "tk_" + "a".repeat(24), backtest_id: "bt1_x", decision: "supported", cutoffs: [], summary: {}, verdict: { verdict_id: "v", kind: "backtest" }, signature: { kid: "k" }, fits_run: 6 };
+  const replies: Array<[unknown, number]> = [
+    [{ code: "engine_error", detail: "busy", remedy: "retry" }, 503],
+    [{ status: "pending", task_id: "tk_" + "a".repeat(24), retry_after_ms: 1000 }, 202],
+    [done, 200],
+  ];
+  const f = (async (url: string, init: RequestInit) => {
+    bodies.push([new URL(url).pathname, JSON.parse(String(init.body))]);
+    const [body, status] = replies.shift()!;
+    return new Response(JSON.stringify(body), { status });
+  }) as unknown as typeof fetch;
+  const dg = new Datagoat({ apiKey: "dgk_live_x", baseUrl: "http://x", fetch: f });
+  dg.sleep = async () => {};
+  const out = await dg.backtest("sample:parley_record", { subject_kind: "org", every: "4w", last: 6, baseline: "none", idempotency_key: "bt-1" });
+  assert.equal(out.decision, "supported");
+  assert.deepEqual(bodies.map((b) => b[0]), ["/v1/backtest", "/v1/backtest", "/v1/poll"]);
+  assert.deepEqual(bodies[0]![1], { data: { dataset_id: "sample:parley_record" }, cutoffs: { every: "4w", last: 6 }, baseline: "none", subject_kind: "org", idempotency_key: "bt-1" });
+  assert.deepEqual(bodies[1]![1], bodies[0]![1], "retried with the same idempotency key: the task is not started twice");
+  assert.ok(RETRY_SAFE.has("backtest"));
+  bodies.length = 0;
+  replies.push([done, 200]);
+  await dg.backtest("ds_" + "b".repeat(25), { subject_kind: "person", acknowledge_decision_support: true });
+  assert.equal(typeof bodies[0]![1].idempotency_key, "string");
+  assert.equal("cutoffs" in bodies[0]![1], false, "no cutoffs stated: the record's own grid");
+  assert.equal(bodies[0]![1].acknowledge_decision_support, true);
+});
+
+test("schedule / deleteSchedule: the public contract on the wire; neither is retried on a 5xx (spec v3 §2 Bookkeeping)", async () => {
+  const bodies: Array<[string, any]> = [];
+  const replies: Array<[unknown, number]> = [
+    [{ schedule: { schedule_id: "sc_" + "a".repeat(25), state: "active", next_run_at: "2026-10-01T00:00:00Z" }, watch_url: "https://datagoat.io/watch/x" }, 200],
+    [{ code: "engine_error", detail: "busy", remedy: "retry" }, 503],
+    [{ code: "engine_error", detail: "busy", remedy: "retry" }, 503],
+  ];
+  const f = (async (url: string, init: RequestInit) => {
+    bodies.push([new URL(url).pathname, JSON.parse(String(init.body))]);
+    const [body, status] = replies.shift()!;
+    return new Response(JSON.stringify(body), { status });
+  }) as unknown as typeof fetch;
+  const dg = new Datagoat({ apiKey: "dgk_live_x", baseUrl: "http://x", fetch: f });
+  dg.sleep = async () => {};
+  const out = await dg.schedule("mp_" + "a".repeat(25), { cadence: "monthly", subject_kind: "org", namespace: "acme" });
+  assert.equal(out.schedule.state, "active");
+  assert.deepEqual(bodies[0], ["/v1/schedule", { mapping_id: "mp_" + "a".repeat(25), cadence: "monthly", subject_kind: "org", namespace: "acme" }]);
+  await assert.rejects(dg.schedule("mp_" + "a".repeat(25), { cadence: "daily", subject_kind: "org" }), (e: DatagoatError) => e.problem.status === 503);
+  await assert.rejects(dg.deleteSchedule("sc_x"), (e: DatagoatError) => e.problem.status === 503);
+  assert.deepEqual(bodies.map((b) => b[0]), ["/v1/schedule", "/v1/schedule", "/v1/delete-schedule"], "each sent once");
+  assert.equal(RETRY_SAFE.has("schedule"), false);
+  assert.equal(RETRY_SAFE.has("delete-schedule"), false);
 });

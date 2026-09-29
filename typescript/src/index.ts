@@ -7,6 +7,96 @@ export type { Jwk, Jwks, VerifyStatus } from "./verify.js";
 export const DEFAULT_BASE = "https://api.datagoat.io";
 /** The API's request limit; a bigger body would be refused before reaching Datagoat. */
 export const MAX_REQUEST_BYTES = 4_500_000;
+/** Upload pieces (uploadFile): the API takes at most PIECE_MAX_BYTES a piece and MAX_PIECES pieces;
+ *  the client cuts at about PIECE_TARGET_BYTES, at a row boundary. */
+export const PIECE_MAX_BYTES = 4_000_000;
+export const PIECE_TARGET_BYTES = 3_500_000;
+export const MAX_PIECES = 250;
+const UPLOAD_RETRIES = 5;
+
+/** A filename the API accepts (letters, digits, dot, dash, underscore; at most 120). */
+export function uploadName(name: string): string {
+  return name.replace(/^.*[\\/]/, "").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "dataset.csv";
+}
+
+async function readSource(source: string | Uint8Array | ArrayBuffer | Blob, filename?: string): Promise<{ bytes: Uint8Array; name: string }> {
+  if (typeof source === "string") {
+    const { readFile } = await import("node:fs/promises");
+    return { bytes: new Uint8Array(await readFile(source)), name: uploadName(filename ?? source) };
+  }
+  const named = (source as { name?: unknown }).name;
+  const name = uploadName(filename ?? (typeof named === "string" ? named : "dataset.csv"));
+  if (source instanceof Uint8Array) return { bytes: source, name };
+  if (source instanceof ArrayBuffer) return { bytes: new Uint8Array(source), name };
+  return { bytes: new Uint8Array(await source.arrayBuffer()), name };
+}
+
+/** "gzip" or "parquet" when the bytes are such a file (gzip 1f 8b; Parquet PAR1 at both ends), else
+ *  null (a CSV). The server and the engine recognise them the same way, by their bytes. */
+export function binaryFormat(b: Uint8Array): "gzip" | "parquet" | null {
+  if (b.length >= 2 && b[0] === 0x1f && b[1] === 0x8b) return "gzip";
+  const par1 = (i: number) => b[i] === 0x50 && b[i + 1] === 0x41 && b[i + 2] === 0x52 && b[i + 3] === 0x31;
+  return b.length >= 12 && par1(0) && par1(b.length - 4) ? "parquet" : null;
+}
+
+/** A gzip or Parquet file's upload pieces: byte slices, joined verbatim by the server. */
+export function byteSlices(b: Uint8Array, size = PIECE_TARGET_BYTES): Uint8Array[] {
+  const out: Uint8Array[] = [];
+  for (let i = 0; i < b.length; i += size) out.push(b.subarray(i, i + size));
+  return out;
+}
+
+/**
+ * Cut a CSV into upload pieces: the header, a newline, then whole rows, each piece at most `target`
+ * bytes unless one row alone is bigger. A row ends at a newline outside double quotes, so a quoted
+ * field with line breaks is never split. A leading byte-order mark is dropped; every piece is
+ * checked to be UTF-8.
+ */
+export function csvPieces(bytes: Uint8Array, target = PIECE_TARGET_BYTES): Uint8Array[] {
+  const b = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? bytes.subarray(3) : bytes;
+  let quoted = false;
+  let header: Uint8Array | null = null;
+  let body = 0;
+  let row = 0;
+  const out: Uint8Array[] = [];
+  const utf8 = new TextDecoder("utf-8", { fatal: true });
+  const piece = (h: Uint8Array, rows: Uint8Array) => {
+    const p = new Uint8Array(h.length + 1 + rows.length);
+    p.set(h, 0);
+    p[h.length] = 0x0a;
+    p.set(rows, h.length + 1);
+    if (p.length > PIECE_MAX_BYTES) throw new Error(`one row of this file is over ${PIECE_MAX_BYTES.toLocaleString("en-US")} bytes; upload it with transport: "presigned"`);
+    try { utf8.decode(p); } catch { throw new Error('this file is not UTF-8 text; save it as "CSV UTF-8" and upload it again'); }
+    out.push(p);
+  };
+  const blank = (x: Uint8Array) => x.every((c) => c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d);
+  for (let i = 0; i < b.length; i++) {
+    const c = b[i];
+    if (c === 0x22) { quoted = !quoted; continue; }
+    if (c !== 0x0a || quoted) continue;
+    if (header === null) {
+      header = b.subarray(0, i > 0 && b[i - 1] === 0x0d ? i - 1 : i);
+      body = row = i + 1;
+      continue;
+    }
+    if (row > body && header.length + 1 + (i + 1 - body) > target) {
+      piece(header, b.subarray(body, row));
+      body = row;
+    }
+    row = i + 1;
+  }
+  if (header === null && !blank(b)) { header = b; body = row = b.length; }
+  if (header !== null) {
+    let tail = b.subarray(body);
+    if (!blank(tail) && row > body && header.length + 1 + tail.length > target) {
+      piece(header, b.subarray(body, row));
+      tail = b.subarray(row);
+    }
+    if (!blank(tail)) piece(header, tail);
+  }
+  if (!out.length) throw new Error("the file needs a header row and at least one row of data");
+  return out;
+}
 
 export interface Problem {
   status: number; code: string; detail: string; remedy: string; field?: string; request_id?: string;
@@ -14,6 +104,22 @@ export interface Problem {
   doc_url?: string;
   /** invalid_outcomes: every bad row, as {index, field, detail}. */
   errors?: Array<{ index?: number; field?: string; detail?: string; [k: string]: unknown }>;
+  /** Only when the analysis engine raised the problem: the engine's id for that call (an ask's
+   *  task_id). Quote it beside request_id to support. */
+  engine_request_id?: string;
+  /** mapping_expired: the manifest of the mapping whose record is gone (what it was built from). */
+  manifest?: Record<string, unknown>;
+}
+
+/** One source of a mapping: a dataset (ds_… or sample:…) or a URL, with an optional label. */
+export type MapSource = { dataset_id: string; label?: string } | { fetch_url: string; fetch_headers?: Record<string, string>; label?: string };
+
+/** dg_map's answers to a proposal's questions (each one of its options). */
+export interface MapAnswers {
+  entity?: Array<{ source: string; column: string }>;
+  time_column?: Array<{ source: string; column: string }>;
+  join?: { table: string; right_key: string };
+  outcome?: { offer_id: string };
 }
 
 /** A problem the API answered with. Each family has its own subclass, so a catch can tell them
@@ -58,11 +164,12 @@ export function errorFor(p: Problem): DatagoatError {
   return new DatagoatError(p);
 }
 
-/** Operations where sending the same request twice cannot do the work twice: reads, an ask (its
- *  idempotency_key returns the first call's task), deletes and outcome reports (duplicates are
- *  recognised). An attest is safe only with an event_id; add-dataset (which may append) never is,
- *  except after a 429, which means the request was turned away before any work. */
-export const RETRY_SAFE: ReadonlySet<string> = new Set(["ask", "poll", "page", "preflight", "verify", "describe", "drift", "evidence", "report-outcomes", "delete-dataset", "suggest", "extend-model", "delete-model"]);
+/** Operations where sending the same request twice cannot do the work twice: reads, an ask and a
+ *  backtest (their idempotency_key returns the first call's task), deletes, outcome reports
+ *  (duplicates are recognised) and a profile (sent whole, it replaces the same profile again). An
+ *  attest is safe only with an event_id; add-dataset (which may append) and map (a confirm stores a
+ *  mapping) never are, except after a 429, which means the request was turned away before any work. */
+export const RETRY_SAFE: ReadonlySet<string> = new Set(["ask", "poll", "page", "preflight", "verify", "describe", "drift", "evidence", "track-record", "profile", "report-outcomes", "delete-dataset", "suggest", "extend-model", "delete-model", "backtest"]);
 
 function mayRetry(op: string, body: unknown, status: number | null): boolean {
   if (status === 429) return true;
@@ -155,7 +262,17 @@ export type Shape =
   | { kind: "panel"; label: { trend_of: string; direction?: "down" | "up"; alpha?: 0.05 | 0.1 } | { window_of: string; periods?: 1 | 2 | 3 | 4; agg?: "max" | "min" | "last" | "any" }; min_history?: number }
   | { kind: "signals"; signal_columns: string[]; windows: number[]; snapshot_every: "15min" | "1h" | "6h" | "1d" | "1w"; horizon: 1 | 3 | 7 | 30; event_column?: string; event_start_column?: string; event_end_column?: string; min_history?: number; as_of?: string }
   | { kind: "traces"; agent_column?: string; task_column?: string; tool_column?: string }
+  | SnapshotsGrid
   | { kind: "snapshots"; snapshots: DataSource; snapshot_id_column: string; snapshot_time_column: string; outcome_time_column?: string; event_column?: string; value_columns?: string[]; lookback_days?: [30, 90] | [7, 30] | [90, 365] };
+/** The snapshots shape without a snapshot table: one snapshot of each case every `snapshot_every`,
+ *  each with the outcome in the `horizon` days after it (blank until that window has passed). The
+ *  outcome is `label` or `outcome_time_column`, not both; the reading names the column
+ *  (lapsed_90d, {name}_next_90d, {column}_next_90d). Ask with `cases: { open: true }` for every case today. */
+export type SnapshotsGrid = {
+  kind: "snapshots"; snapshot_every: "1d" | "1w" | "4w"; horizon: { value: 1 | 7 | 30 | 60 | 90; unit: "days" };
+  label?: { lapsed: true } | { name: string; when: Predicate }; outcome_time_column?: string;
+  event_column?: string; value_columns?: string[]; lookbacks_days?: [30, 90] | [7, 30] | [90, 365]; terminal?: boolean; as_of?: string;
+};
 /** What a record's time column counts. `steps` is a whole-number column with no calendar. */
 export type TimeUnit = "minutes" | "hours" | "days" | "weeks" | "steps";
 export type Predicate = { column: string; op: "==" | "!=" | "<" | "<=" | ">" | ">=" | "in"; value: unknown } | { all: Predicate[] } | { any: Predicate[] };
@@ -167,9 +284,17 @@ export const series = (o: Without<"series">): Shape => ({ kind: "series", ...sta
 export const panel = (o: Without<"panel">): Shape => ({ kind: "panel", ...stated(o) } as Shape);
 export const signals = (o: Without<"signals">): Shape => ({ kind: "signals", ...stated(o) } as Shape);
 export const traces = (o: Without<"traces"> = {}): Shape => ({ kind: "traces", ...stated(o) } as Shape);
-/** An event log read as of moments you choose: `snapshots` is the snapshot table (one row per case per
- *  moment, with the outcome). Whole cases are held out. */
-export const snapshots = (o: Without<"snapshots">): Shape => ({ kind: "snapshots", ...stated(o) } as Shape);
+/** An event log read as each case was at many moments. Without `snapshots` (a snapshot table): one
+ *  snapshot per case every `snapshot_every` (1d, 1w, 4w), the outcome in the `horizon` days after
+ *  each (see SnapshotsGrid). With it: one row per case per moment you choose, with the outcome.
+ *  Whole cases are held out either way. */
+export const snapshots = (o: Without<"snapshots">): Shape => {
+  if (!("snapshots" in o) || o.snapshots === undefined) {
+    const g = o as Omit<SnapshotsGrid, "kind">;
+    if ((g.label === undefined) === (g.outcome_time_column === undefined)) throw new Error("send label ({ lapsed: true } or { name, when }) or outcome_time_column, not both");
+  }
+  return { kind: "snapshots", ...stated(o) } as Shape;
+};
 
 export interface DataSource { dataset_id?: string; rows?: Record<string, unknown>[]; csv?: string; fetch_url?: string; fetch_headers?: Record<string, string> }
 export interface AskOptions {
@@ -181,12 +306,17 @@ export interface AskOptions {
   group_column?: string;
   /** Keeps this call's models and usage apart, e.g. one namespace per customer of your product. */
   namespace?: string;
-  cases?: { ids: string[] } | { rows: Record<string, unknown>[] }; time_column?: string; shape?: Shape; band?: boolean;
+  /** By id, as rows, or `{ open: true }`: today's open cases, found by the engine (on a snapshots or
+   *  mapped record, each case at as_of; each answer's quality.record then counts the labelled and
+   *  open rows the fit read). */
+  cases?: { ids: string[] } | { rows: Record<string, unknown>[] } | { open: true }; time_column?: string; shape?: Shape; band?: boolean;
   acknowledge_decision_support?: boolean; idempotency_key?: string;
   /** "csv" adds export.results_url: every case, one row per question per case, for 24 hours. */
   export?: "csv";
-  /** "concise" leaves each answer's Verdicts out (verdicts_withheld); page.answer_url has the whole answer. */
-  response_format?: "full" | "concise";
+  /** "concise" leaves each answer's Verdicts out (verdicts_withheld); page.answer_url has the whole answer.
+   *  "compact" also shows each case as entity_id, p, p_display and, when the answer has them, band,
+   *  level and says (about a twentieth of the full size); a pending fit is then polled compact. */
+  response_format?: "full" | "concise" | "compact";
   /** Follow a pending first fit to its answer (default true), for at most timeoutMs (default 15 min). */
   wait?: boolean; timeoutMs?: number;
   /** Called for each stage the server reports while a fit runs, from the task's event stream
@@ -196,7 +326,29 @@ export interface AskOptions {
   /** Every event of the task's stream, as { event, id, data }. */
   onEvent?: (e: TaskEvent) => void;
 }
+/** dg_backtest's options (the dataset_id is the first argument). */
+export interface BacktestOptions {
+  subject_kind: "person" | "org" | "object" | "event" | "other";
+  /** How far apart the cutoffs are: the record's snapshot_every (the default) or a multiple of it. */
+  every?: "1d" | "1w" | "4w";
+  /** How many cutoffs, the most recent whose horizon has passed: 3 to 12 (default 6). */
+  last?: number;
+  /** single_column (default): one numeric column ranked on its own, graded beside the model. */
+  baseline?: "single_column" | "none";
+  acknowledge_decision_support?: boolean;
+  idempotency_key?: string;
+  response_format?: "full" | "concise";
+  wait?: boolean; timeoutMs?: number;
+  onProgress?: AskOptions["onProgress"]; onEvent?: AskOptions["onEvent"];
+}
 export type Answer = Record<string, unknown> & { status: "done" | "pending"; task_id?: string; answers?: Record<string, any> };
+/** dg_poll and dg_page take "full" or "compact" (spec v3 S10). */
+export type PageFormat = "full" | "compact";
+function pageFormat(f: string): PageFormat {
+  if (f !== "full" && f !== "compact") throw new Error('response_format is "full" or "compact"');
+  return f;
+}
+
 /** A pending poll body: what onProgress gets when there is no event stream to read. */
 export type PendingPoll = Answer & { status: "pending" };
 /** A stage the server reported, verbatim. `message` is the sentence; nothing here composes one. */
@@ -279,6 +431,8 @@ export class Datagoat {
         status: r.status, code: String(json.code ?? "http_error"), detail: String(json.detail ?? r.statusText), remedy: String(json.remedy ?? "see https://datagoat.io/docs"),
         ...(json.field ? { field: String(json.field) } : {}), ...(json.request_id ? { request_id: String(json.request_id) } : {}),
         ...(json.doc_url ? { doc_url: String(json.doc_url) } : {}), ...(Array.isArray(json.errors) ? { errors: json.errors as Problem["errors"] } : {}),
+        ...(json.engine_request_id ? { engine_request_id: String(json.engine_request_id) } : {}),
+        ...(json.manifest && typeof json.manifest === "object" ? { manifest: json.manifest as Record<string, unknown> } : {}),
       });
       err.retryAfterMs = retryAfterMs(r, json);
       throw err;
@@ -293,7 +447,31 @@ export class Datagoat {
     if (!Object.keys(questions).length) throw new Error("ask needs at least one question");
     if (o.export !== undefined && o.export !== "csv") throw new Error('export is "csv"');
     const { wait = true, timeoutMs = 15 * 60_000, onProgress, onEvent, ...rest } = o;
-    let out = await this.call<Answer>("ask", { ...rest, questions, idempotency_key: o.idempotency_key ?? crypto.randomUUID() });
+    // dg_poll and dg_page take full or compact: a compact ask is polled and paged compact.
+    const later: PageFormat | undefined = o.response_format === "compact" ? "compact" : undefined;
+    const out = await this.call<Answer>("ask", { ...rest, questions, idempotency_key: o.idempotency_key ?? crypto.randomUUID() });
+    return this.whole(await this.follow(out, wait, timeoutMs, onProgress, onEvent, later), later);
+  }
+
+  /** What a record dg_map built from a log supported in its own past (sample:parley_record, or a
+   *  confirm's dataset_id): a fit at each of the last cutoffs on the record's grid, graded on what
+   *  came next beside a naive baseline, a summary, a decision and one signed Verdict (kind
+   *  backtest). `every` and `last` are the cutoffs (default the record's snapshot_every, 6). It
+   *  runs as a task: a pending walk is followed to its result, as ask does (never re-sent: that
+   *  would start a second walk). Costs one fit per cutoff that ran; free on the samples. */
+  async backtest(dataset_id: string, o: BacktestOptions): Promise<Answer> {
+    const { wait = true, timeoutMs = 15 * 60_000, onProgress, onEvent, every, last, ...rest } = o;
+    const cutoffs = stated({ every, last });
+    const out = await this.call<Answer>("backtest", {
+      data: { dataset_id }, ...(Object.keys(cutoffs).length ? { cutoffs } : {}), ...stated(rest),
+      idempotency_key: o.idempotency_key ?? crypto.randomUUID(),
+    });
+    return this.whole(await this.follow(out, wait, timeoutMs, onProgress, onEvent));
+  }
+
+  /** Follow a pending task to its result, bounded; never re-submits (that would fit twice). */
+  private async follow(first: Answer, wait: boolean, timeoutMs: number, onProgress: AskOptions["onProgress"], onEvent: AskOptions["onEvent"], later?: PageFormat): Promise<Answer> {
+    let out = first;
     const deadline = Date.now() + timeoutMs;
     let watched = false;
     while (wait && out.status === "pending") {
@@ -301,14 +479,14 @@ export class Datagoat {
       // With a callback, watch the event stream first; without one, or with no stream, poll as before.
       if (!watched && (onProgress || onEvent)) {
         watched = true;
-        if (await this.watch(taskId, deadline, onProgress, onEvent)) { out = await this.poll(taskId); continue; }
+        if (await this.watch(taskId, deadline, onProgress, onEvent)) { out = await this.poll(taskId, later); continue; }
       }
       onProgress?.(out as PendingPoll);
       if (Date.now() >= deadline) throw pollTimeout(taskId);
       await this.sleep(Math.max(500, Number(out.retry_after_ms ?? 2000)));
-      out = await this.poll(taskId);
+      out = await this.poll(taskId, later);
     }
-    return this.whole(out);
+    return out;
   }
 
   /** Watch a task's stream to done or error: true when it got there, false when there is no stream
@@ -440,13 +618,13 @@ export class Datagoat {
     }
   }
 
-  /** REST answers come whole; should one ever arrive paged, fetch the rest and join it. */
-  private async whole(out: Answer): Promise<Answer> {
+  /** REST answers come whole; should one ever arrive paged, fetch the rest (in the same format) and join it. */
+  private async whole(out: Answer, format?: PageFormat): Promise<Answer> {
     let cursor = (out.page as { next_cursor?: string } | undefined)?.next_cursor;
     if (out.status !== "done" || !cursor) return out;
     const pages: Answer[] = [];
     while (cursor) {
-      const p = await this.page(cursor);
+      const p = await this.page(cursor, format);
       pages.push(p);
       cursor = (p.page as { next_cursor?: string } | undefined)?.next_cursor;
     }
@@ -491,8 +669,11 @@ export class Datagoat {
     return joinChunks(outs);
   }
 
-  /** The next page of a paged answer (answers over MCP are paged; REST answers come whole). */
-  page(cursor: string) { return this.call<Answer>("page", { cursor }); }
+  /** The next page of a paged answer (answers over MCP are paged; REST answers come whole). The
+   *  format is chosen per call: the same cursor gives full or compact cases. */
+  async page(cursor: string, response_format?: PageFormat) {
+    return this.call<Answer>("page", { cursor, ...(response_format !== undefined ? { response_format: pageFormat(response_format) } : {}) });
+  }
 
   /** Fetch an export or answer link (valid 24 hours). The link is its own credential: no key is sent.
    *  Returns the Response, so a large file can be streamed (`res.body`) or read (`await res.text()`). */
@@ -506,10 +687,86 @@ export class Datagoat {
   }
 
   addDataset(body: DataSource & { dataset_id?: string; upload?: true; filename?: string }) { return this.call("add-dataset", body); }
+
+  /**
+   * Upload a CSV, a gzip-compressed CSV or a Parquet file of any size and return its dataset_id.
+   * `source` is a file path (Node), bytes or a Blob. A gzip or Parquet file (recognised by its
+   * bytes) goes as byte slices joined verbatim, and the engine reads it. By default the file goes in pieces to this client's own base URL (api.datagoat.io): no
+   * other host is contacted, so it works where only the API host is reachable (an agent's sandbox,
+   * a locked-down network). Each piece is at most 4 MB, cut at a row boundary with the header on
+   * every piece; a failed piece is sent again, and the server ignores a piece it already has.
+   * Redirects are not followed. `transport: "presigned"` instead PUTs the whole file to the
+   * presigned upload_url on the storage host.
+   */
+  async uploadFile(source: string | Uint8Array | ArrayBuffer | Blob, o: { filename?: string; transport?: "pieces" | "presigned"; onPiece?: (n: number) => void } = {}): Promise<string> {
+    const transport = o.transport ?? "pieces";
+    if (transport !== "pieces" && transport !== "presigned") throw new Error('transport is "pieces" or "presigned"');
+    const { bytes, name } = await readSource(source, o.filename);
+    // A gzip or Parquet file goes as its own bytes, cut anywhere and joined verbatim (the engine
+    // reads it); a CSV is cut at row boundaries with the header on every piece.
+    const format = binaryFormat(bytes);
+    // Cut (and check) the whole file before a dataset is made for it.
+    const pieces = transport !== "pieces" ? [] : format ? byteSlices(bytes) : csvPieces(bytes);
+    if (pieces.length > MAX_PIECES) throw new Error(`the file needs more than ${MAX_PIECES} pieces of ${PIECE_MAX_BYTES.toLocaleString("en-US")} bytes; upload it with transport: "presigned"`);
+    const d = await this.addDataset({ upload: true, filename: name });
+    if (transport === "presigned") {
+      const r = await this.f(String(d.upload_url), { method: "PUT", headers: { "content-type": format ? "application/octet-stream" : "text/csv" }, body: bytes as unknown as BodyInit });
+      if (!r.ok) throw new DatagoatError({ status: r.status, code: "upload_failed", detail: `the presigned PUT answered ${r.status}`, remedy: "upload the file again" });
+      return String(d.dataset_id);
+    }
+    const url = d.upload_pieces_url;
+    if (typeof url !== "string" || !url.includes("/v1/uploads/")) {
+      throw new DatagoatError({ status: 502, code: "upload_pieces_unavailable", detail: "the server returned no upload_pieces_url", remedy: 'upload with transport: "presigned"' });
+    }
+    // The token is the credential; the pieces go to THIS client's host, never to another one.
+    const token = url.replace(/\/$/, "").split("/").pop()!;
+    const at = `${this.base}/v1/uploads/${encodeURIComponent(token)}`;
+    const session = crypto.randomUUID().replace(/-/g, "");
+    for (let i = 0; i < pieces.length; i++) {
+      await this.sendPiece(`${at}/${i}`, pieces[i]!, format ? "application/octet-stream" : "text/csv", session);
+      o.onPiece?.(i + 1);
+    }
+    await this.sendPiece(`${at}/complete`, JSON.stringify({ pieces: pieces.length }), "application/json", session);
+    return String(d.dataset_id);
+  }
+
+  /** POST one piece, again after a dropped connection, a 429 or a 5xx (a repeated piece is a no-op
+   *  on the server). No key is sent: the upload link is the credential. A redirect is an error, so
+   *  no byte of the file goes to a host the caller did not name. */
+  private async sendPiece(url: string, body: Uint8Array | string, contentType: string, session: string): Promise<Record<string, unknown>> {
+    for (let attempt = 0; ; attempt++) {
+      let wait: number | undefined;
+      let r: Response | null = null;
+      try {
+        r = await this.f(url, { method: "POST", redirect: "manual", headers: { "content-type": contentType, "x-upload-session": session }, body: body as unknown as BodyInit });
+      } catch (e) {
+        if (attempt >= UPLOAD_RETRIES) throw new DatagoatError({ status: 503, code: "network_error", detail: String((e as Error).message), remedy: "check the connection, then upload the file again" });
+      }
+      if (r) {
+        if (r.type === "opaqueredirect" || (r.status >= 300 && r.status < 400)) {
+          const where = r.headers.get("location");
+          throw new DatagoatError({ status: r.status || 302, code: "upload_redirect_refused", detail: `the upload was redirected${where ? ` (to ${where})` : ""}; pieces are sent only to ${this.base}`, remedy: "check baseUrl: it must be the API itself" });
+        }
+        const json = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        if (r.ok) return json;
+        const err = errorFor({ status: r.status, code: String(json.code ?? "http_error"), detail: String(json.detail ?? r.statusText), remedy: String(json.remedy ?? "send the file again"), ...(json.field ? { field: String(json.field) } : {}), ...(json.request_id ? { request_id: String(json.request_id) } : {}) });
+        if (![429, 502, 503, 504].includes(r.status) || attempt >= UPLOAD_RETRIES) throw err;
+        wait = retryAfterMs(r, json);
+      }
+      await this.sleep(wait === undefined ? backoffMs(attempt + 1) : Math.min(wait, 60_000));
+    }
+  }
   /** Delete a stored dataset now; otherwise it is deleted 24 hours after its last use. */
   deleteDataset(dataset_id: string) { return this.call<{ dataset_id: string; deleted: true }>("delete-dataset", { dataset_id }); }
-  async poll(task_id: string) { return this.whole(await this.call<Answer>("poll", { task_id })); }
-  /** Is the table worth asking about? Free. entity_column is reported as an identifier, never a predictor. */
+  /** A task's status, then its answer; "compact" shows a finished answer's cases compact, as ask does. */
+  async poll(task_id: string, response_format?: PageFormat) {
+    return this.whole(await this.call<Answer>("poll", { task_id, ...(response_format !== undefined ? { response_format: pageFormat(response_format) } : {}) }), response_format);
+  }
+  /**
+   * Is the table worth asking about? Free. entity_column is reported as an identifier, never a predictor.
+   * @deprecated Served until contract 2.0.0, when dg_preflight is removed. `map({ sources: [dataset_id] })`
+   * on the same table reports the same and more (resolutions, fitness, blocking, advisory, case_variants).
+   */
   preflight(dataset_id: string, o: { outcome_column?: string; entity_column?: string; predictors?: string[] } = {}) { return this.call("preflight", { dataset_id, ...stated(o) }); }
   /**
    * Record what really happened. Up to 10,000 rows (the API's most per call) go in ONE call,
@@ -555,10 +812,43 @@ export class Datagoat {
   drift(model_ref: string, o: { namespace?: string } = {}) { return this.call("drift", { model_ref, ...stated(o) }); }
   /** Which yes/no questions a table could be asked, and whether each is worth asking. Free; fits nothing. */
   suggest(o: { data: DataSource; entity_column: string; time_column?: string; include_categories?: boolean }) { return this.call("suggest", o); }
+  /** Map a table, or one or two event logs with at most one table, into a record. Free. Without
+   *  `answers` it proposes and stores nothing: `questions` lists each slot where two or more
+   *  candidates survive, with its options, and those choices are the user's to make. With
+   *  `answers` it confirms: `mapping_id`, `dataset_id`, `record` and a ready-to-run `ask` (add
+   *  `subject_kind`). `mapping_id` alone replays a confirm; `closed_since` adds `closed`. A string
+   *  source is a dataset_id; `horizon` is days (1, 7, 30, 60 or 90). Never retried on a 5xx: a
+   *  confirm stores a mapping (RETRY_SAFE). */
+  map(o: {
+    sources?: Array<MapSource | string>; answers?: MapAnswers; outcome_words?: string[]; horizon?: 1 | 7 | 30 | 60 | 90 | { value: number; unit: "days" };
+    snapshot_every?: "1d" | "1w" | "4w"; as_of?: string; mapping_id?: string; closed_since?: string;
+  }) {
+    if (!o.sources && !o.mapping_id) throw new Error("map needs sources (a proposal or a confirm) or mapping_id (a replay)");
+    const { sources, horizon, ...rest } = o;
+    return this.call<Record<string, unknown>>("map", {
+      ...(sources ? { sources: sources.map((s) => (typeof s === "string" ? { dataset_id: s } : s)) } : {}),
+      ...(horizon !== undefined ? { horizon: typeof horizon === "number" ? { value: horizon, unit: "days" } : horizon } : {}),
+      ...stated(rest),
+    });
+  }
   /** Keep a model answering until `days` (1 to 365) from now. */
   extendModel(model_ref: string, days: number, o: { namespace?: string } = {}) { return this.call<{ model_ref: string; model_expires_at: string }>("extend-model", { model_ref, days, ...stated(o) }); }
   /** Delete a model now; its model_ref stops answering. */
   deleteModel(model_ref: string, o: { namespace?: string } = {}) { return this.call<{ model_ref: string; deleted: true }>("delete-model", { model_ref, ...stated(o) }); }
+  /** Keep a confirmed mapping answered on a cadence (daily, weekly or monthly: a calendar month). Each run
+   *  fetches the mapping's sources again, rebuilds the record, fits (refit_of from the second run; skipped
+   *  when the labelled readings are unchanged), reads drift, scores today's open cases and reports the
+   *  outcomes that closed, each step an ordinary call with idempotency_key "<run_id>:<step>". Returns
+   *  `schedule` and the first run's `watch_url`. Needs a live key with "Can report outcomes"
+   *  (schedule_key_required) and fetch_url sources (schedule_sources_not_refetchable). Not retried on a
+   *  5xx (see RETRY_SAFE). describe() lists schedules. */
+  schedule(mapping_id: string, o: { cadence: "daily" | "weekly" | "monthly"; subject_kind: string; acknowledge_decision_support?: boolean; namespace?: string }) {
+    return this.call<{ schedule: Record<string, unknown> & { schedule_id: string; state: string; next_run_at: string | null }; watch_url?: string }>("schedule", {
+      mapping_id, cadence: o.cadence, subject_kind: o.subject_kind, ...(o.acknowledge_decision_support ? { acknowledge_decision_support: true } : {}), ...(o.namespace !== undefined ? { namespace: o.namespace } : {}),
+    });
+  }
+  /** End a schedule now: no further run; its stored key id, scopes and encrypted headers are deleted. */
+  deleteSchedule(schedule_id: string) { return this.call<{ schedule_id: string; deleted: true }>("delete-schedule", { schedule_id }); }
   /** Record that you acted on a case through one of its levers. Returns compliant, dose_fraction and evaluated_feature. */
   attest(a: { model_ref: string; entity_id: string; lever_token: string; post_value: number | string | boolean | null; acted_at: string; event_id?: string; namespace?: string }) { return this.call("attest", a); }
   /** Did acting work? Outcomes of cases acted on vs not, once each group has 30 with an outcome. */
